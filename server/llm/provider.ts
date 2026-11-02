@@ -1,7 +1,8 @@
 // LLM backend seam for the chat server (server/claudeChat.ts). Every upstream call goes through an LlmProvider.
 // The request format is the Anthropic Messages shape that claudeChat builds (chatRequest: a stable system block with its
 // cache breakpoint, the volatile reminder on the newest user turn). anthropicProvider sends it unchanged; openaiProvider
-// converts it to the OpenAI Responses shape (server/llm/openaiProvider.ts).
+// converts it to the OpenAI Responses shape (server/llm/openaiProvider.ts); localProvider converts it to the Chat Completions
+// shape of an OpenAI-compatible local server (server/llm/localProvider.ts).
 import type { BetaMessageStreamParams } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 import type { ClaudeUsage } from '../usage.ts';
 import type { ProviderId } from '../../src/game/claudeProtocol.ts';
@@ -51,6 +52,12 @@ export type LlmStream = {
 
 export interface LlmProvider {
   id: ProviderId;
+  /**
+   * true when the server writes every kanji reading itself (the local models: a small model often gets readings wrong). The model
+   * is told not to write them, the readings in the history it is sent are removed, and any it writes anyway are removed before
+   * kuromoji fills them all in (server/readings.ts stripReadings, fillReadings).
+   */
+  serverReadings?: boolean;
   /** deltas go to onDelta as they arrive; the returned stream carries the end */
   streamChat(req: LlmChatRequest, onDelta: (text: string) => void): LlmStream;
   complete(req: LlmCompleteRequest, opts?: LlmCompleteOptions): Promise<LlmResult>;

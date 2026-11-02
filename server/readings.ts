@@ -147,3 +147,18 @@ export async function fillReadings(text: string, log: (m: string) => void = cons
   }
   return text.replace(JA, (_m, inner: string) => `<ja>${annotateJa(inner, tk)}</ja>`);
 }
+
+/**
+ * A reading a model wrote after a kanji run, as in 学校[がっこう]: the brackets hold kana only, so the brackets of a JSON text
+ * (an array) are never taken for one.
+ */
+const MODEL_RUBY = /([\p{Script=Han}々〆ヶ]+)\[[ぁ-ゖァ-ヺー・]{1,30}\]/gu;
+
+/**
+ * The text with every reading a model wrote removed (学校[がっこう]に → 学校に). Used for the local models (serverReadings, see
+ * server/llm/provider.ts): their readings are not trusted, and fillReadings then writes them all from the analyser. Works on
+ * plain text and on the JSON text of a reply alike.
+ */
+export function stripReadings(text: string): string {
+  return text.replace(MODEL_RUBY, '$1');
+}

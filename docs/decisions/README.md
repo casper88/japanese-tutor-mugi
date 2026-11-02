@@ -15,6 +15,7 @@
 | [0007](0007-structured-outputs.md) | Structured Outputs：格式交給 API 保證 | 已採用 |
 | [0008](0008-persona-and-picture.md) | 人設與人設圖片：只換個性，換了重新開始 | 已採用 |
 | [0009](0009-ai-routing-and-oauth.md) | AI 路由與登入：Claude 與 ChatGPT 依序備援 | 已採用 |
+| [0010](0010-local-model.md) | 本地模型：OpenAI 相容 API，讀音交給程式 | 已採用 |
 
 所有決定都依同一個判斷原則：**能用程式確定的就不交給模型；其次省 token。**
 

@@ -63,18 +63,18 @@ The architecture diagram ([`docs/img/architecture.svg`](docs/img/architecture.sv
 
 <p align="center"><img src="docs/img/architecture.svg" alt="System architecture diagram" width="100%"></p>
 
-The phone talks only to the `/api` routes of the dev server on your PC. The server holds the keys and makes every call to Claude, ChatGPT (OpenAI), Google, Azure and VOICEVOX, so the only things that reach the phone are replies, audio and the page itself. Settings, chat history, tips and lookups are stored in the phone's (or browser's) `localStorage`; character and background pictures are kept in the browser's IndexedDB.
+The phone talks only to the `/api` routes of the dev server on your PC. The server holds the keys and makes every call to Claude, ChatGPT (OpenAI), the local model, Google, Azure and VOICEVOX, so the only things that reach the phone are replies, audio and the page itself. Settings, chat history, tips and lookups are stored in the phone's (or browser's) `localStorage`; character and background pictures are kept in the browser's IndexedDB.
 
 ## Quick start
 
-Requires **Node.js 20 or newer** (tested with Node.js 24) and either an **Anthropic (Claude) API key** or a **ChatGPT account** (pick one; see [AI services](#ai-services)).
+Requires **Node.js 20 or newer** (tested with Node.js 24) and at least one of an **Anthropic (Claude) API key**, a **ChatGPT account** or a **local model on the PC** such as Ollama (see [AI services](#ai-services)).
 
 ```bash
 npm install
 cp .env.example .env.local      # Windows: copy .env.example .env.local
 ```
 
-Open `.env.local` in a text editor and set `ANTHROPIC_API_KEY` (skip this if you use only ChatGPT; sign in from the settings on the PC instead). Then start the development server:
+Open `.env.local` in a text editor and set `ANTHROPIC_API_KEY` (skip this if you use only ChatGPT or a local model; sign in or turn it on from the settings on the PC instead). Then start the development server:
 
 ```bash
 npm run dev
@@ -88,10 +88,15 @@ By default the dev server listens on this PC only (`127.0.0.1`). To use it from 
 
 ## AI services
 
-You need at least one of Claude and ChatGPT (with both, they are used in the order set under 「AI 服務」, and an error moves to the other one). The voice services are optional.
+You need at least one of Claude, ChatGPT and a local model (with more than one, they are used in the order set under 「AI 服務」, and an error moves to the next one). The voice services are optional.
 
-- **Claude (one of the two)**: Chat, the 速查 lookup, the 小提醒 rewrite and the speaking check can use the Anthropic API. Create a key in the [Anthropic Console](https://console.anthropic.com/) and put it in `.env.local` as `ANTHROPIC_API_KEY`. If your key is scoped to a workspace, also set `ANTHROPIC_WORKSPACE_ID`. The default model is Haiku 5.5 (`claude-haiku-5-5`), set by `CLAUDE_MODEL_DEFAULT` in `src/game/claudeProtocol.ts`; set `ANTHROPIC_MODEL` to use Opus 5.5 or another model (Opus costs more per token, so the same daily cap buys fewer sentences). Anthropic bills API usage to the account that owns the key, so set a spending limit in the Console. In the settings you can pick the chat model (by default the server's own), choose a separate model for 速查 and 小提醒, and write your own persona (see [Features](#features)).
-- **ChatGPT (one of the two)**: sign in with your own ChatGPT account (OpenAI's official OAuth). No OpenAI API key is needed; usage counts against your ChatGPT plan, not the daily budget. Open the app on the PC and press 「用 ChatGPT 登入」 under 「AI 服務」 in ⚙️ Settings. The sign-in data is kept in your user folder on the PC (`~/.mugi-tutor`, or the folder named by `MUGI_DATA_DIR`), never in the project folder and never sent to the phone. On Windows it is encrypted (the key is protected by Windows); on other systems it is a plain file readable only by your account. After signing in you can pick the ChatGPT model and put ChatGPT before or after Claude. Under OpenAI's terms, don't share your account.
+- **Claude (pick at least one)**: Chat, the 速查 lookup, the 小提醒 rewrite and the speaking check can use the Anthropic API. Create a key in the [Anthropic Console](https://console.anthropic.com/) and put it in `.env.local` as `ANTHROPIC_API_KEY`. If your key is scoped to a workspace, also set `ANTHROPIC_WORKSPACE_ID`. The default model is Haiku 5.5 (`claude-haiku-5-5`), set by `CLAUDE_MODEL_DEFAULT` in `src/game/claudeProtocol.ts`; set `ANTHROPIC_MODEL` to use Opus 5.5 or another model (Opus costs more per token, so the same daily cap buys fewer sentences). Anthropic bills API usage to the account that owns the key, so set a spending limit in the Console. In the settings you can pick the chat model (by default the server's own), choose a separate model for 速查 and 小提醒, and write your own persona (see [Features](#features)).
+- **ChatGPT (pick at least one)**: sign in with your own ChatGPT account (OpenAI's official OAuth). No OpenAI API key is needed; usage counts against your ChatGPT plan, not the daily budget. Open the app on the PC and press 「用 ChatGPT 登入」 under 「AI 服務」 in ⚙️ Settings. The sign-in data is kept in your user folder on the PC (`~/.mugi-tutor`, or the folder named by `MUGI_DATA_DIR`), never in the project folder and never sent to the phone. On Windows it is encrypted (the key is protected by Windows); on other systems it is a plain file readable only by your account. After signing in you can pick the ChatGPT model and put ChatGPT before or after Claude. Under OpenAI's terms, don't share your account.
+- **Local model (pick at least one)**: run a free open model on the PC. No key is needed, it does not count against the daily budget, and the chat never leaves your PC (or your home network). Any server with an OpenAI-compatible API works, such as [Ollama](https://ollama.com/), [LM Studio](https://lmstudio.ai/) or llama.cpp's `llama-server`. With Ollama: install it, download a model that is good at Chinese and Japanese (for example `ollama pull qwen3:8b`), and turn on 「本地模型」 under 「AI 服務」 in ⚙️ Settings. By default it connects to `http://127.0.0.1:11434/v1` and uses the first model in the list. For another server or a specific model, fill in 「本地模型網址」 and 「模型名稱」 in the settings on the PC (written to `.env.local` as `LOCAL_LLM_URL` and `LOCAL_LLM_MODEL`; set `LOCAL_LLM_API_KEY` too if the server needs a key).
+  - All kanji readings come from the server's kuromoji: the model is asked not to write them, and any it writes are removed first (small models often get them wrong).
+  - The system prompt and the chat history take up to about 8K tokens. Ollama's default context may be shorter: raise it to 8192 or more (for example set `OLLAMA_CONTEXT_LENGTH=8192` before starting Ollama), or the rules at the start get cut off.
+  - Models that "think" first (such as Qwen3) are slower on every line; use a model without thinking, or turn thinking off in the server.
+  - A model of 8B or more with a graphics card is recommended (the 4-bit 8B models need about 6 GB of video memory); on the CPU alone it is slow. Small models are weaker than Claude at correcting mistakes and explaining them.
 - **Keys and the ChatGPT sign-in are done on the PC**: the 「AI 服務」 and 「金鑰」 sections of ⚙️ Settings take the Claude, Google and Azure keys. They are written to `.env.local` on the PC, and only the last four characters are shown. ChatGPT is signed in and out only on the PC (open the app at 127.0.0.1, with the 「用 ChatGPT 登入」 and 「登出」 buttons). On the phone the keys and the ChatGPT sign-in are read-only, but the phone can still pick the models (Claude chat, helper and ChatGPT), change the order and the on/off of the AI services, and change the daily budget under 「每日預算上限」 (0 means no cap).
 - **Optional voices**: Spoken replies use the browser voice by default. You can change the engine for Chinese and Japanese separately in ⚙️ > 聲音 (Settings > Voice).
   - **Browser (default).** Uses the device's own speech synthesis. Nothing to configure.

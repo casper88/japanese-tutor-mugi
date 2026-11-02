@@ -63,18 +63,18 @@
 
 <p align="center"><img src="docs/img/architecture.svg" alt="系統架構圖" width="100%"></p>
 
-手機只會連到電腦上開發伺服器的 `/api` 路由。伺服器保管金鑰，並負責所有對 Claude、ChatGPT（OpenAI）、Google、Azure 與 VOICEVOX 的呼叫，所以傳到手機的只有回覆、音訊與頁面本身。設定、聊天紀錄、小提醒與速查紀錄存在手機（或瀏覽器）的 `localStorage`；人物與背景的圖片存在瀏覽器的 IndexedDB。
+手機只會連到電腦上開發伺服器的 `/api` 路由。伺服器保管金鑰，並負責所有對 Claude、ChatGPT（OpenAI）、本地模型、Google、Azure 與 VOICEVOX 的呼叫，所以傳到手機的只有回覆、音訊與頁面本身。設定、聊天紀錄、小提醒與速查紀錄存在手機（或瀏覽器）的 `localStorage`；人物與背景的圖片存在瀏覽器的 IndexedDB。
 
 ## 快速開始
 
-需求：**Node.js 20 以上**（本專案在 Node.js 24 上測試過）與一組 **Claude（Anthropic）API 金鑰，或一個 ChatGPT 帳號**（擇一，見[AI 服務](#ai-服務)）。
+需求：**Node.js 20 以上**（本專案在 Node.js 24 上測試過），再加上 **Claude（Anthropic）API 金鑰、ChatGPT 帳號，或電腦上的本地模型（例如 Ollama）** 其中至少一種（見[AI 服務](#ai-服務)）。
 
 ```bash
 npm install
 cp .env.example .env.local      # Windows 請用：copy .env.example .env.local
 ```
 
-用文字編輯器打開 `.env.local`，填入 `ANTHROPIC_API_KEY`（只用 ChatGPT 的話可以略過，改在電腦上的設定裡登入）。接著啟動開發伺服器：
+用文字編輯器打開 `.env.local`，填入 `ANTHROPIC_API_KEY`（只用 ChatGPT 或本地模型的話可以略過，改在電腦上的設定裡登入或開啟）。接著啟動開發伺服器：
 
 ```bash
 npm run dev
@@ -88,10 +88,15 @@ npm run dev
 
 ## AI 服務
 
-Claude 與 ChatGPT 至少要有一個（兩個都設定時，依「AI 服務」裡的順序使用，出錯自動換另一個）；語音服務都是選用。
+Claude、ChatGPT 與本地模型至少要有一個（設定多個時，依「AI 服務」裡的順序使用，出錯自動換下一個）；語音服務都是選用。
 
-- **Claude（擇一）**：聊天、速查、小提醒改寫與口說判斷可以使用 Anthropic API。到 [Anthropic Console](https://console.anthropic.com/) 建立金鑰，並把它填入 `.env.local` 的 `ANTHROPIC_API_KEY`。如果你的金鑰綁定在 Workspace 上，也要設定 `ANTHROPIC_WORKSPACE_ID`。預設模型是 Haiku 5.5（`claude-haiku-5-5`），由 `src/game/claudeProtocol.ts` 的 `CLAUDE_MODEL_DEFAULT` 決定；如要改用 Opus 5.5 或其他模型，設定 `ANTHROPIC_MODEL`（Opus 單價較高，同樣的每日上限能講的句數較少）。API 用量由 Anthropic 依金鑰所屬的帳號計費，建議在 Console 設定消費上限。設定裡可以為聊天選模型（預設依伺服器設定），速查與小提醒有各自的模型，也可以自訂人設（見[功能](#功能)）。
-- **ChatGPT（擇一）**：用自己的 ChatGPT 帳號登入（OpenAI 官方 OAuth），不需要 OpenAI API 金鑰，用量算在你的 ChatGPT 方案額度，不計入每日預算上限。在電腦上開 App，到 ⚙️ 設定的「AI 服務」按「用 ChatGPT 登入」；登入資料存在電腦的使用者資料夾（`~/.mugi-tutor`，可用環境變數 `MUGI_DATA_DIR` 改位置），不會進專案資料夾，也不會傳到手機。Windows 上會加密（金鑰由 Windows 保護）；其他系統是不加密的檔案，權限只開給你的帳號。登入後可以選 ChatGPT 的模型，並把 ChatGPT 排到 Claude 前面或後面。依 OpenAI 條款，請勿分享帳號。
+- **Claude（至少選一）**：聊天、速查、小提醒改寫與口說判斷可以使用 Anthropic API。到 [Anthropic Console](https://console.anthropic.com/) 建立金鑰，並把它填入 `.env.local` 的 `ANTHROPIC_API_KEY`。如果你的金鑰綁定在 Workspace 上，也要設定 `ANTHROPIC_WORKSPACE_ID`。預設模型是 Haiku 5.5（`claude-haiku-5-5`），由 `src/game/claudeProtocol.ts` 的 `CLAUDE_MODEL_DEFAULT` 決定；如要改用 Opus 5.5 或其他模型，設定 `ANTHROPIC_MODEL`（Opus 單價較高，同樣的每日上限能講的句數較少）。API 用量由 Anthropic 依金鑰所屬的帳號計費，建議在 Console 設定消費上限。設定裡可以為聊天選模型（預設依伺服器設定），速查與小提醒有各自的模型，也可以自訂人設（見[功能](#功能)）。
+- **ChatGPT（至少選一）**：用自己的 ChatGPT 帳號登入（OpenAI 官方 OAuth），不需要 OpenAI API 金鑰，用量算在你的 ChatGPT 方案額度，不計入每日預算上限。在電腦上開 App，到 ⚙️ 設定的「AI 服務」按「用 ChatGPT 登入」；登入資料存在電腦的使用者資料夾（`~/.mugi-tutor`，可用環境變數 `MUGI_DATA_DIR` 改位置），不會進專案資料夾，也不會傳到手機。Windows 上會加密（金鑰由 Windows 保護）；其他系統是不加密的檔案，權限只開給你的帳號。登入後可以選 ChatGPT 的模型，並把 ChatGPT 排到 Claude 前面或後面。依 OpenAI 條款，請勿分享帳號。
+- **本地模型（至少選一）**：在電腦上跑免費的開源模型，不需要金鑰、不計入每日預算上限，對話也不會離開你的電腦（或家裡的網路）。支援提供 OpenAI 相容 API 的伺服器，例如 [Ollama](https://ollama.com/)、[LM Studio](https://lmstudio.ai/) 或 llama.cpp 的 `llama-server`。用 Ollama 的話：安裝後下載一個中日文都好的模型（例如 `ollama pull qwen3:8b`），在 ⚙️ 設定的「AI 服務」打開「本地模型」即可；預設連 `http://127.0.0.1:11434/v1`，用清單裡第一個模型。用其他伺服器或指定模型時，在電腦上的設定填「本地模型網址」與「模型名稱」（寫進 `.env.local` 的 `LOCAL_LLM_URL`、`LOCAL_LLM_MODEL`；伺服器需要金鑰時另外設定 `LOCAL_LLM_API_KEY`）。
+  - 漢字讀音全部由伺服器的 kuromoji 標註：模型不用寫，寫了也會先被拿掉（小模型常標錯）。
+  - 系統提示加上對話紀錄最多約 8K token。Ollama 的預設長度上限可能比這短，請調到 8192 以上（例如啟動 Ollama 前設定環境變數 `OLLAMA_CONTEXT_LENGTH=8192`），不然前面的規則會被截掉。
+  - 會「思考」的模型（例如 Qwen3）每句都會慢一些，可以改用不思考的模型，或在伺服器上關掉思考。
+  - 建議用 8B 以上的模型並有顯示卡（8B 的 4-bit 版本大約需要 6 GB 顯示記憶體）；只用 CPU 會很慢。小模型的糾錯和解說會比 Claude 弱。
 - **金鑰與 ChatGPT 登入在電腦上完成**：⚙️ 設定的「AI 服務」與「金鑰」可以填入 Claude、Google 與 Azure 的金鑰，它們會寫進電腦上的 `.env.local`，畫面只顯示末四碼。ChatGPT 的「用 ChatGPT 登入」與「登出」也只能在電腦上按（用 127.0.0.1 開啟 App）。手機上金鑰與 ChatGPT 登入只能看狀態，不能改；但手機可以選模型（Claude 聊天、小提醒模型與 ChatGPT 模型）、調整 AI 服務的先後順序與開關，並修改每日預算上限（在設定的「每日預算上限」，0 代表不限）。
 - **選用語音**：預設使用瀏覽器內建的語音。你可以在 ⚙️ > 聲音 中，分別為中文與日文更換語音引擎。
   - **瀏覽器內建（預設）。** 使用裝置本身的語音合成，不需要設定。

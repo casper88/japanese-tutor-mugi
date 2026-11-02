@@ -33,7 +33,7 @@ export const TUTOR_NEW_SUBTITLE = '日語家教';
  * sttLang: the language the mic listens in (日 ja-JP / 中 zh-TW).
  * chatModel: the model of her chat; '' = the server's own setting (ANTHROPIC_MODEL).
  * helperModel: the model of 速查 and 小提醒 (the judge and the tip rewrite).
- * providers: the AI services in the order to try them (設定 › AI 服務): Claude, ChatGPT, or both; never empty.
+ * providers: the AI services in the order to try them (設定 › AI 服務): any of Claude, ChatGPT and 本地模型; never empty.
  * openaiModel: the ChatGPT model; '' = the first one the plan lists.
  * background: the background in use for all characters: 'classroom', 'black', or the id of an added one (customBackgrounds).
  * customBackgrounds: the ids of the backgrounds the player added, in tab order (at most TUTOR_BACKGROUNDS_MAX; pictures in IndexedDB).
@@ -148,9 +148,12 @@ export function aiServicesOf(s: TutorSettings): AiServices {
   return { providers: [...s.providers], ...(s.openaiModel ? { openaiModel: s.openaiModel } : {}) };
 }
 
-/** whether any of the chosen services can answer now: Claude has its key, or ChatGPT is signed in with the plan */
-export function serviceReady(providers: readonly ProviderId[], ready: { anthropic: boolean; openai: boolean }): boolean {
-  return providers.some((p) => (p === 'anthropic' ? ready.anthropic : ready.openai));
+/**
+ * whether any of the chosen services can answer now: Claude has its key, ChatGPT is signed in with the plan, or the local model
+ * server answers. A service missing from `ready` cannot answer.
+ */
+export function serviceReady(providers: readonly ProviderId[], ready: Partial<Record<ProviderId, boolean>>): boolean {
+  return providers.some((p) => ready[p] === true);
 }
 
 /** the ChatGPT model a player typed or picked: trimmed, at most OPENAI_MODEL_MAX_CHARS characters; anything else is '' */

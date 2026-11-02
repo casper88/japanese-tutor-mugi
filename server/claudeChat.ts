@@ -6,9 +6,11 @@
 //   POST /api/chat/judge  → { ok, feedback }        judges a 小提醒 practice line (non-streaming)
 //   POST /api/chat/fix-tip → { ok, tip }            rewrites one 小提醒 that came back with Japanese (Haiku, background)
 // Every upstream call goes through an LlmProvider (server/llm/provider.ts). Each AI request names its services in the order to
-// try them (`providers`, server/aiChain.ts): Claude (the API key) and ChatGPT (the signed-in account, server/openai). A service
-// that cannot take the request (a failure that fallbackWorthy accepts) hands it to the next one.
+// try them (`providers`, server/aiChain.ts): Claude (the API key), ChatGPT (the signed-in account, server/openai) and 本地模型
+// (an OpenAI-compatible server such as Ollama, server/llm/localService.ts). A service that cannot take the request (a failure
+// that fallbackWorthy accepts) hands it to the next one.
 //   GET  /api/openai/status, POST /api/openai/login and /logout, GET /auth/callback: the ChatGPT sign-in (routes.ts)
+//   GET  /api/local/status: whether the local model server answers, and its models (localService.ts)
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
@@ -23,19 +25,20 @@ import { createOAuth } from './openai/oauth.ts';
 import { createChatGpt, type ChatGptService } from './openai/service.ts';
 import { dataDirectory, defaultProtector, openCredentialStore } from './openai/credentials.ts';
 import { handleAuthCallback, handleOpenAiApi } from './openai/routes.ts';
-import { JUDGE_PROMPT, LOOKUP_SYSTEM, TIP_FIX_SYSTEM, defaultPersona, reminderPrompt, systemPrompt } from './prompts.ts';
+import { JUDGE_PROMPT, LOOKUP_SYSTEM, LOOKUP_SYSTEM_PLAIN, TIP_FIX_SYSTEM, TIP_FIX_SYSTEM_PLAIN, defaultPersona, reminderPrompt, systemPrompt } from './prompts.ts';
 import { fixReplyJson, isChineseTip, wrapJapanese } from './replyFix.ts';
-import { fillReadings, loadAnalyzer } from './readings.ts';
+import { fillReadings, loadAnalyzer, stripReadings } from './readings.ts';
 import { dailyLimitHit, getUsageStore, type ClaudeUsage, type UsageStore } from './usage.ts';
 import { guardApi, guardOptionsFrom } from './apiGuard.ts';
 import { handleSettingsApi } from './settingsRoutes.ts';
 import { PROJECT_ROOT } from './voicevoxProcess.ts';
 import { anthropicProvider, describeAnthropicError } from './llm/anthropicProvider.ts';
 import type { LlmChatRequest, LlmProvider, LlmResult, LlmStream } from './llm/provider.ts';
+import { handleLocalApi, localModelFor, localService, readLocalConfig, type LocalConfig } from './llm/localService.ts';
 import type { BetaMessageStreamParams } from '@anthropic-ai/sdk/resources/beta/messages/messages';
 
-/** no service can take the request: Claude has no key and ChatGPT is not signed in (or the list has neither) */
-const NO_SERVICE = { error: 'no_service', message: '尚無可用的 AI 服務：請在電腦上設定 Claude 金鑰，或登入 ChatGPT。' };
+/** no service can take the request: Claude has no key, ChatGPT is not signed in and no local model answers (or the list has none) */
+const NO_SERVICE = { error: 'no_service', message: '尚無可用的 AI 服務：請在電腦上設定 Claude 金鑰、登入 ChatGPT，或啟動本地模型（例如 Ollama）。' };
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_CONTEXT_CHARS = 100;
 /** the beta server-side fallback is opted into explicitly (see the request below) */
@@ -194,10 +197,16 @@ export function chatGptService(): ChatGptService | null {
 /**
  * The services of a request, in the order of its routing. A Claude service needs the key and the daily cap not reached (the cap
  * is reported as dailyCapped); a ChatGPT service needs the signed-in plan and a model (the one named in openaiModel when it is
- * listed, else the first listed). claudeModel: the Claude model of this request (default: the server's own).
+ * listed, else the first listed); a local service needs a valid address and a model (LOCAL_LLM_MODEL, else the first chat
+ * model the server lists). claudeModel: the Claude model of this request (default: the server's own). `local` and
+ * `localFetch` replace the local settings and the network (the tests).
  */
 export async function servicesFor(
-  routing: Routing, opts: { root: string; mode: string; claudeModel?: string; chatgpt?: ChatGptService | null; reserveUsd?: number },
+  routing: Routing,
+  opts: {
+    root: string; mode: string; claudeModel?: string; chatgpt?: ChatGptService | null; reserveUsd?: number;
+    local?: LocalConfig; localFetch?: typeof fetch;
+  },
 ): Promise<{ services: Service[]; dailyCapped: boolean }> {
   const s = readSettings(opts.root, opts.mode);
   const services: Service[] = [];
@@ -212,6 +221,16 @@ export async function servicesFor(
       }
       const release = hold(opts.reserveUsd ?? CHAT_RESERVE_USD);
       services.push({ id, model: opts.claudeModel ?? s.model, provider: anthropicProvider(clientFor(s.key, s.workspace)), spend: true, hold: release });
+      continue;
+    }
+    if (id === 'local') {
+      const cfg = opts.local ?? readLocalConfig(opts.root, opts.mode);
+      if (!cfg.url) continue;
+      const local = { ...cfg, url: cfg.url };
+      const model = await localModelFor(local, opts.localFetch);
+      if (!model) continue;
+      // a local model costs nothing: no spend and no hold against the daily Claude cap
+      services.push({ id, model, provider: localService(local, opts.localFetch), spend: false });
       continue;
     }
     const chatgpt = opts.chatgpt === undefined ? chatGptService() : opts.chatgpt;
@@ -371,16 +390,19 @@ export function parseChatBody(raw: string): ChatBody {
  * The upstream messages for a validated body. The history goes through exactly as the client sent it (each turn's text is
  * frozen when sent, see claudeProtocol.userTurn), and only the NEWEST user message gets the volatile reminder appended
  * (reminderPrompt, in a <reminder> tag). The reminder is never stored, so every earlier message is byte-identical from
- * one request to the next.
+ * one request to the next. `serverReadings` (the local models): the readings are left out of her earlier lines, and the
+ * reminder asks for none (the server writes them all).
  *
  * Cache breakpoints: the system block (stable per role and mode) and the last message before the newest user turn, which
  * is the end of the stable history. The newest user turn carries no breakpoint: its bytes (the reminder) are volatile and
  * are re-sent without it next turn, so caching them would never hit again.
  */
-export function upstreamMessages(messages: ChatMessage[]): BetaMessageStreamParams['messages'] {
+export function upstreamMessages(messages: ChatMessage[], opts: { serverReadings?: boolean } = {}): BetaMessageStreamParams['messages'] {
   const n = messages.length;
   return messages.map((m, i) => {
-    const text = i === n - 1 ? `${m.content}\n\n<reminder>${reminderPrompt()}</reminder>` : m.content;
+    // a model whose readings the server writes is never shown any: her earlier lines go without them
+    const content = opts.serverReadings && m.role === 'assistant' ? stripReadings(m.content) : m.content;
+    const text = i === n - 1 ? `${content}\n\n<reminder>${reminderPrompt(opts)}</reminder>` : content;
     if (i === n - 2) {
       return { role: m.role, content: [{ type: 'text', text, cache_control: { type: 'ephemeral' } }] };
     }
@@ -420,8 +442,9 @@ export const CHAT_REPLY_SCHEMA = {
 /**
  * The upstream request for a validated body: model, the stable system block with its breakpoint, and the messages from
  * upstreamMessages. No top-level cache_control: the automatic marker would sit on the volatile newest turn.
+ * `serverReadings`: the provider's (see upstreamMessages).
  */
-export function chatRequest(body: ChatBody, model: string): LlmChatRequest {
+export function chatRequest(body: ChatBody, model: string, opts: { serverReadings?: boolean } = {}): LlmChatRequest {
   return {
     model,
     max_tokens: 2000,
@@ -435,7 +458,7 @@ export function chatRequest(body: ChatBody, model: string): LlmChatRequest {
     // keeps the reply's shape, the fallback only adds a retry.
     fallbacks: 'default',
     system: [{ type: 'text', text: systemPrompt(body.role, body.persona, body.name), cache_control: { type: 'ephemeral' } }],
-    messages: upstreamMessages(body.messages),
+    messages: upstreamMessages(body.messages, opts),
   };
 }
 
@@ -611,7 +634,8 @@ export function tipFromFixReply(text: string): string {
 
 /**
  * Rewrites one 小提醒 that came back with Japanese prose. The inner text (with its <ja> tags) goes in; the rewritten tip
- * comes back with its readings filled, or null when it still does not read as Chinese.
+ * comes back with its readings filled, or null when it still does not read as Chinese. A provider whose readings the server
+ * writes (serverReadings) gets the tip without readings and is asked for none.
  */
 export async function rewriteTipWith(
   provider: LlmProvider,
@@ -619,17 +643,19 @@ export async function rewriteTipWith(
   onUsage?: (model: string, usage: ClaudeUsage) => void,
   model: string = TIP_FIX_MODEL,
 ): Promise<string | null> {
+  const plain = !!provider.serverReadings;
   const msg = await provider.complete({
     model,
     max_tokens: TIP_FIX_MAX_TOKENS,
     thinking: { type: 'disabled' },
     output_config: { format: { type: 'json_schema', schema: TIP_FIX_SCHEMA } },
-    system: TIP_FIX_SYSTEM,
-    messages: [{ role: 'user', content: tip }],
+    system: plain ? TIP_FIX_SYSTEM_PLAIN : TIP_FIX_SYSTEM,
+    messages: [{ role: 'user', content: plain ? stripReadings(tip) : tip }],
     schemaName: 'mugi_tip',
   }, { timeout: TIP_FIX_TIMEOUT_MS });
   onUsage?.(msg.model || model, msg.usage as ClaudeUsage);
-  const inner = tipFromFixReply(msg.text);
+  const reply = tipFromFixReply(msg.text);
+  const inner = plain ? stripReadings(reply) : reply;
   if (!inner) return null;
   const fixed = await fillReadings(wrapJapanese(inner), (w) => console.warn(w));
   return isChineseTip(fixed) ? fixed : null;
@@ -694,7 +720,7 @@ export type ReplyIo = {
   spendEnded(svc: Service, upstream: LlmChatRequest, stream: LlmStream, replyChars: number): void;
   /** a Claude reply that completed: its spend */
   spendDone(svc: Service, final: LlmResult): void;
-  /** the reply is complete: the done event (or the refusal's error), with the fixed JSON */
+  /** the reply is complete: the done event (or the refusal's error), with the fixed JSON (a local model's readings already removed) */
   finish(svc: Service, final: LlmResult): Promise<void>;
   /** the reply failed for good (no fallback): the error for the player, as the service describes it */
   failed(svc: Service, error: unknown): void;
@@ -710,7 +736,7 @@ export async function streamReply(services: Service[], body: ChatBody, io: Reply
   for (let i = 0; i < services.length; i++) {
     const svc = services[i];
     const last = i === services.length - 1;
-    const upstream: LlmChatRequest = chatRequest(body, svc.model);
+    const upstream: LlmChatRequest = chatRequest(body, svc.model, { serverReadings: svc.provider.serverReadings });
     // the reply text sent so far (for the spend estimate when the stream ends early without usage)
     let replyChars = 0;
     // whether any text reached the player: only a stream that sent nothing may move on to the next service
@@ -727,7 +753,8 @@ export async function streamReply(services: Service[], body: ChatBody, io: Reply
       const final: LlmResult = await stream.done;
       if (svc.spend) io.spendDone(svc, final);
       recorded = true;
-      await io.finish(svc, final);
+      // a local model's own readings are removed first, so every reading comes from the analyser (fixReplyJson)
+      await io.finish(svc, svc.provider.serverReadings ? { ...final, text: stripReadings(final.text) } : final);
       return svc;
     } catch (e) {
       // a stream that ended early (the player left, the upstream failed or hit the time limit) still spends what it used
@@ -884,6 +911,16 @@ export function claudeChatPlugin(): Plugin {
           if (!res.writableEnded) res.end('登入失敗，請回到首頁重試。');
         });
       });
+      // the local model's status: whether its server answers, and the models it lists (localService.ts)
+      server.middlewares.use('/api/local', guardApi((req, res) => {
+        handleLocalApi(req, res, root, mode).then((handled) => {
+          if (!handled) json(res, 404, { error: 'not_found', message: '沒有這個 API' });
+        }).catch((e: unknown) => {
+          console.warn('[local]', e instanceof Error ? e.message : e);
+          if (!res.headersSent) json(res, 500, { error: 'server', message: '伺服器錯誤' });
+          else if (!res.writableEnded) res.end();
+        });
+      }, guard));
       server.middlewares.use('/api/lookup', guardApi((req, res) => {
         handleLookup(req, res, root, mode).catch((e: unknown) => {
           console.warn('[lookup]', e instanceof Error ? e.message : e);
@@ -995,7 +1032,8 @@ export function parseLookupBody(raw: string): string {
 
 /**
  * One lookup: the model's reply parsed into an answer (null when it is not readable JSON: the raw text goes back instead),
- * and every <ja> field gets the kanji readings it lacks (readings.ts), as the chat replies do.
+ * and every <ja> field gets the kanji readings it lacks (readings.ts), as the chat replies do. A provider whose readings the
+ * server writes (serverReadings) is asked for none, and any it writes are removed first.
  */
 export async function lookupAnswerWith(
   provider: LlmProvider,
@@ -1008,7 +1046,7 @@ export async function lookupAnswerWith(
     max_tokens: LOOKUP_MAX_TOKENS,
     thinking: { type: 'disabled' },
     output_config: { format: { type: 'json_schema', schema: LOOKUP_SCHEMA } },
-    system: LOOKUP_SYSTEM,
+    system: provider.serverReadings ? LOOKUP_SYSTEM_PLAIN : LOOKUP_SYSTEM,
     messages: [{ role: 'user', content: q }],
     schemaName: 'mugi_lookup',
   }, { timeout: LOOKUP_TIMEOUT_MS });
@@ -1017,9 +1055,10 @@ export async function lookupAnswerWith(
   const answer = parseLookupText(raw);
   if (!answer) return { answer: null, raw };
   const log = (m: string) => console.warn(m);
-  for (const it of answer.items) it.ja = await fillReadings(it.ja, log);
-  for (const g of answer.grammar) if (g.point) g.point = await fillReadings(g.point, log);
-  for (const ex of answer.examples) ex.ja = await fillReadings(ex.ja, log);
+  const own = (t: string) => (provider.serverReadings ? stripReadings(t) : t);
+  for (const it of answer.items) it.ja = await fillReadings(own(it.ja), log);
+  for (const g of answer.grammar) if (g.point) g.point = await fillReadings(own(g.point), log);
+  for (const ex of answer.examples) ex.ja = await fillReadings(own(ex.ja), log);
   return { answer, raw };
 }
 

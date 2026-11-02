@@ -17,6 +17,7 @@ import { emitReply, nextReplyId } from './replyBus';
 import { stripTipLabel } from './tipsBook';
 import { activeCharacter, aiServicesOf, effectivePersona, loadTutor, serviceReady, TUTOR_DEFAULT_NAME, type AiServices } from './tutor';
 import { chatGptReady } from './openaiStatus';
+import { localReady } from './localStatus';
 
 /** `personas`: the default personality text per role (from the server, shown in the 人設 settings) */
 export type ClaudeStatus = { ok: boolean; model: string; personas?: Record<string, string> };
@@ -518,11 +519,13 @@ export const claudeBrain: ChatBrain = {
   label: 'Claude',
   capabilities: { streaming: true, teacher: true, needsServer: true },
   async available() {
-    // usable when one of the chosen services can answer: Claude has its key, or ChatGPT is signed in with the plan
+    // usable when one of the chosen services can answer: Claude has its key, ChatGPT is signed in with the plan, or the local
+    // model server answers
     const cfg = loadTutor();
     const anthropic = cfg.providers.includes('anthropic') && (lastStatus ?? (await claudeStatus())).ok;
     const openai = cfg.providers.includes('openai') && (await chatGptReady());
-    return serviceReady(cfg.providers, { anthropic, openai });
+    const local = cfg.providers.includes('local') && (await localReady());
+    return serviceReady(cfg.providers, { anthropic, openai, local });
   },
   async reply(req) {
     const c = await askClaude({
