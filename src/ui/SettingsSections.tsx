@@ -15,8 +15,12 @@ import {
 } from '../game/tutorBackground';
 import { DEFAULT_SCENE, DIM_MAX, isBuiltinBackground, newBackgroundId } from '../game/tutorScene';
 import { getTtsSettings, onTtsSettings, setTtsSettings, ttsAvailable, type TtsSettings } from '../game/tts';
-import { CHAT_MODEL_CHOICES, PERSONA_MAX_CHARS, PROVIDERS_MAX, PROVIDER_LABELS, chatModelLabel, clipCodePoints, type ChatModelId, type ProviderId } from '../game/claudeProtocol';
+import {
+  CHAT_MODEL_CHOICES, LOCAL_LLM_URL_DEFAULT, PERSONA_MAX_CHARS, PROVIDERS_MAX, PROVIDER_IDS, PROVIDER_LABELS, chatModelLabel, clipCodePoints,
+  type ChatModelId, type ProviderId,
+} from '../game/claudeProtocol';
 import { logoutChatGpt, startChatGptLogin, type ChatGptStatus } from '../game/openaiStatus';
+import { localStatusText, type LocalStatus } from '../game/localStatus';
 import { fetchBudget, fetchKeysStatus, saveBudget, saveKeys, type BudgetStatus, type FieldStatus, type KeyName, type KeysStatus } from '../game/settingsApi';
 import { budgetLine } from '../game/budgetEstimate';
 import { LangVoiceGroup } from './VoiceSettings';
@@ -132,7 +136,7 @@ export function ModelSection({ chatModel, helperModel, serverModel, onChange, th
 }
 
 /** the services the settings list, in the order the player keeps them (a service that is off is listed after the ones on) */
-const SERVICE_IDS: ProviderId[] = ['anthropic', 'openai'];
+const SERVICE_IDS: readonly ProviderId[] = PROVIDER_IDS;
 
 /** whether this page is opened on the PC itself (127.0.0.1, localhost or [::1]): the keys and the ChatGPT sign-in are set only there (the server checks the same) */
 export function isLocalPc(): boolean {
@@ -151,10 +155,10 @@ export function useKeysStatus(): [KeysStatus | null, (s: KeysStatus) => void] {
   return [keys, setKeys];
 }
 
-/** the status line of one key: 未設定, or 已設定 with the last four characters (a region shows its name) */
-export function keyStatusText(status: FieldStatus | null): string {
+/** the status line of one key: 未設定 (or `unset`), or 已設定 with the last four characters (a region shows its name) */
+export function keyStatusText(status: FieldStatus | null, unset = '未設定'): string {
   if (status === null) return '讀取中…';
-  if (!status.set) return '未設定';
+  if (!status.set) return unset;
   if (status.value) return `已設定（${status.value}）`;
   return status.last4 ? `已設定（末四碼 ${status.last4}）` : '已設定';
 }
@@ -163,8 +167,10 @@ export function keyStatusText(status: FieldStatus | null): string {
  * One key (or a plain setting such as the region) in Settings: a box that never shows the stored value (password type, no
  * autocomplete), 儲存 (sets it) and 清除 (removes it), and the status line. `onSaved` gets the server's new keys status.
  */
-export function KeyField({ label, field, status, onSaved, plain = false, placeholder, localPc = isLocalPc() }: {
+export function KeyField({ label, field, status, onSaved, plain = false, placeholder, unset, localPc = isLocalPc() }: {
   label: string; field: KeyName; status: FieldStatus | null; onSaved: (s: KeysStatus) => void; plain?: boolean; placeholder?: string;
+  /** the status line when nothing is set (default 未設定) */
+  unset?: string;
   /** on the PC: the box and its buttons; from a phone: the status line only (the server refuses key writes from anywhere else) */
   localPc?: boolean;
 }) {
@@ -188,14 +194,14 @@ export function KeyField({ label, field, status, onSaved, plain = false, placeho
   if (!localPc) {
     return (
       <div className="as-key">
-        <div className="as-row"><span>{label}<small>{keyStatusText(status)}</small></span></div>
+        <div className="as-row"><span>{label}<small>{keyStatusText(status, unset)}</small></span></div>
       </div>
     );
   }
   return (
     <div className="as-key">
       <div className="as-row">
-        <span>{label}<small>{keyStatusText(status)}</small></span>
+        <span>{label}<small>{keyStatusText(status, unset)}</small></span>
         <input className="as-key-input" type={plain ? 'text' : 'password'} autoComplete="off" autoCapitalize="off" spellCheck={false}
           value={value} placeholder={placeholder} aria-label={label} onChange={(e) => setValue(e.currentTarget.value)} />
         <button className="as-small" disabled={busy || !value.trim()} onClick={() => void saveValue()}>儲存</button>
@@ -215,6 +221,29 @@ function AnthropicKeys({ onSaved, localPc = isLocalPc() }: { onSaved?: () => voi
       <KeyField label="Claude 金鑰" field="anthropicKey" status={keys?.anthropicKey ?? null} onSaved={changed} localPc={localPc} />
       <KeyField label="工作區 ID（選填）" field="anthropicWorkspace" plain status={keys?.anthropicWorkspace ?? null} onSaved={changed} localPc={localPc} />
       {!localPc && <div className="as-lang-note"><small>金鑰只能在電腦上設定（在電腦上用 127.0.0.1 開啟 App）</small></div>}
+    </div>
+  );
+}
+
+/**
+ * The local model's address and model name, under the 本地模型 row of AI 服務 (written to the PC's .env.local; a phone sees only
+ * the status), the models its server lists, and 重新偵測 (asks the server again, after Ollama or LM Studio was started).
+ */
+function LocalFields({ local, onSaved, onRefresh, localPc = isLocalPc() }: {
+  local: LocalStatus | null; onSaved?: () => void; onRefresh?: () => void; localPc?: boolean;
+}) {
+  const [keys, setKeys] = useKeysStatus();
+  const changed = (s: KeysStatus) => { setKeys(s); onSaved?.(); };
+  const models = local?.models ?? [];
+  return (
+    <div className="as-ai-chatgpt">
+      <KeyField label="本地模型網址" field="localUrl" plain placeholder={LOCAL_LLM_URL_DEFAULT} unset={`未設定（用 Ollama 的 ${LOCAL_LLM_URL_DEFAULT}）`}
+        status={keys?.localUrl ?? null} onSaved={changed} localPc={localPc} />
+      <KeyField label="模型名稱（選填）" field="localModel" plain placeholder="例如 qwen3:8b" unset="未設定（用清單裡的第一個）"
+        status={keys?.localModel ?? null} onSaved={changed} localPc={localPc} />
+      {models.length > 0 && <div className="as-lang-note"><small>可用模型：{models.join('、')}</small></div>}
+      {onRefresh && <button className="as-small" onClick={onRefresh}>重新偵測</button>}
+      {!localPc && <div className="as-lang-note"><small>網址和模型名稱只能在電腦上設定（在電腦上用 127.0.0.1 開啟 App）</small></div>}
     </div>
   );
 }
@@ -242,13 +271,20 @@ export function CloudKeysSection({ onSaved, localPc = isLocalPc() }: { onSaved?:
  * AI 服務: the services 日語家教 may use, in the order to try them (the order is sent with every AI request). Each row has an
  * on/off switch (at least one stays on) and 上移／下移. Claude needs its key (a box in its row, written to the PC's .env.local; a
  * phone sees only the status). ChatGPT signs in and out with its buttons on the PC only; a phone sees the status and picks the model.
- * `claudeOk` / `chatgpt`: null until read. theme 'dark': the dark sheet.
+ * 本地模型 needs a server on the PC (Ollama, LM Studio…); its address and model are set on the PC, like the keys.
+ * `claudeOk` / `chatgpt` / `local`: null until read. theme 'dark': the dark sheet.
  */
-export function AiServiceSection({ providers, openaiModel, claudeOk, chatgpt, onChange, onRefresh, onKeysSaved, localPc = isLocalPc(), theme }: {
+export function AiServiceSection({
+  providers, openaiModel, claudeOk, chatgpt, local = null, onChange, onRefresh, onRefreshLocal, onKeysSaved, localPc = isLocalPc(), theme,
+}: {
   providers: ProviderId[]; openaiModel: string; claudeOk: boolean | null; chatgpt: ChatGptStatus | null;
+  /** the local model server's status (game/localStatus) */
+  local?: LocalStatus | null;
   onChange: (patch: { providers?: ProviderId[]; openaiModel?: string }) => void;
   /** re-reads the ChatGPT status (after a sign-in or sign-out) */
   onRefresh: () => void;
+  /** re-reads the local model status (重新偵測) */
+  onRefreshLocal?: () => void;
   /** a key was saved: the view re-reads the Claude status (the server rereads .env.local on every request) */
   onKeysSaved?: () => void;
   /** on the PC: the key boxes and the ChatGPT buttons; from a phone: the status only (see isLocalPc) */
@@ -296,6 +332,7 @@ export function AiServiceSection({ providers, openaiModel, claudeOk, chatgpt, on
   const chatgptText = chatgpt === null ? '讀取中…'
     : !chatgpt.signedIn ? '未登入'
       : chatgpt.planEnabled ? `已登入${chatgpt.email ? `（${chatgpt.email}）` : ''}` : '已登入，但沒有 ChatGPT 方案的使用權，請重新登入';
+  const statusText = (id: ProviderId) => (id === 'anthropic' ? claudeText : id === 'openai' ? chatgptText : localStatusText(local));
   const models = chatgpt?.models ?? [];
   const selectedModel = models.some((m) => m.slug === openaiModel) ? openaiModel : (models[0]?.slug ?? '');
 
@@ -311,7 +348,7 @@ export function AiServiceSection({ providers, openaiModel, claudeOk, chatgpt, on
           return (
             <li key={id} className="as-ai-item">
               <div className="as-row">
-                <span>{label}<small>{id === 'anthropic' ? claudeText : chatgptText}</small></span>
+                <span>{label}<small>{statusText(id)}</small></span>
                 <label className="as-ai-switch"><span>使用</span>
                   <input type="checkbox" role="switch" aria-label={`${label} 使用`} checked={on} disabled={lastOn}
                     onChange={(e) => toggle(id, e.currentTarget.checked)} /></label>
@@ -319,6 +356,7 @@ export function AiServiceSection({ providers, openaiModel, claudeOk, chatgpt, on
                 <button className="as-small" aria-label={`${label} 下移`} disabled={!on || i < 0 || i >= providers.length - 1} onClick={() => move(id, 1)}>下移</button>
               </div>
               {id === 'anthropic' && <AnthropicKeys onSaved={onKeysSaved} localPc={localPc} />}
+              {id === 'local' && <LocalFields local={local} onSaved={onKeysSaved} onRefresh={onRefreshLocal} localPc={localPc} />}
               {id === 'openai' && (
                 <div className="as-ai-chatgpt">
                   {!localPc && chatgpt !== null && <small className="as-ai-hint">ChatGPT 只能在電腦上登入或登出</small>}
@@ -343,6 +381,7 @@ export function AiServiceSection({ providers, openaiModel, claudeOk, chatgpt, on
       </ul>
       {note && <div className="as-lang-note" role="status"><small>{note}</small></div>}
       <div className="as-lang-note"><small>ChatGPT 使用你自己方案的額度，不需要 OpenAI API 金鑰；登入資料加密存在電腦的使用者資料夾，不會傳到手機。依 OpenAI 條款，請勿分享帳號。</small></div>
+      <div className="as-lang-note"><small>本地模型在電腦上執行（例如 Ollama、LM Studio），不花 Claude 的預算，漢字讀音由系統自動標註。小模型的糾錯和解說會比雲端模型弱。</small></div>
       <div className="as-lang-note"><small>金鑰會寫進電腦上的 .env.local，畫面只顯示末四碼。</small></div>
     </div>
   );

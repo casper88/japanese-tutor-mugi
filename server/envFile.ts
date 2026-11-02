@@ -1,5 +1,5 @@
-// Writes the keys and the daily budget into .env.local, from the settings sheet (server/settingsRoutes.ts). Only the six names
-// in ENV_KEYS can be written. Every other line of the file (comments, other keys, their order, the line endings) is kept as it
+// Writes the keys, the local model settings and the daily budget into .env.local, from the settings sheet
+// (server/settingsRoutes.ts). Only the names in ENV_KEYS can be written. Every other line of the file (comments, other keys, their order, the line endings) is kept as it
 // is; a key that is already there is replaced in place, a missing one is appended, and null removes it. The file is written
 // atomically (a temp file in the same folder, then rename) with mode 0600. A value is never logged and never put in an error.
 import fs from 'node:fs';
@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto';
 
 export const ENV_KEYS = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_WORKSPACE_ID', 'GOOGLE_TTS_API_KEY', 'AZURE_SPEECH_KEY', 'AZURE_SPEECH_REGION', 'MUGI_DAILY_USD',
+  'LOCAL_LLM_URL', 'LOCAL_LLM_MODEL',
 ] as const;
 export type AllowedKey = (typeof ENV_KEYS)[number];
 const ALLOWED = new Set<string>(ENV_KEYS);
@@ -16,9 +17,18 @@ const ALLOWED = new Set<string>(ENV_KEYS);
 export const VALUE_PATTERN = /^[A-Za-z0-9._-]{1,300}$/;
 /** an Azure region name, for example eastasia */
 export const REGION_PATTERN = /^[a-z0-9]{2,30}$/;
+/**
+ * the address of the local model server: http or https, a host name, an IPv4 or a bracketed IPv6 address, an optional port and
+ * path. No user name, query, fragment, space or quote (server/llm/localService.ts parseLocalUrl checks it again when it is used).
+ */
+export const LOCAL_URL_PATTERN = /^https?:\/\/(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?(?:\/[A-Za-z0-9._~\/-]*)?$/;
+/** a local model name, for example qwen3:8b or hf.co/user/model:Q4_K_M */
+export const LOCAL_MODEL_PATTERN = /^[A-Za-z0-9._:\/@+-]{1,200}$/;
 
 export const VALUE_MESSAGE = '金鑰只能包含英文字母、數字、「.」「_」「-」，長度 1 到 300 字，不能有空白、引號或「=」「#」。';
 export const REGION_MESSAGE = '區域名稱只能是小寫英文字母與數字，例如 eastasia。';
+export const LOCAL_URL_MESSAGE = '網址要像 http://127.0.0.1:11434/v1（http 或 https，不能有空白、引號、「?」「#」或帳號密碼）。';
+export const LOCAL_MODEL_MESSAGE = '模型名稱只能包含英文字母、數字與「. _ - : / @ +」，長度 1 到 200 字。';
 const NAME_MESSAGE = '這個設定不能用這個方式寫入。';
 const WRITE_MESSAGE = '無法寫入 .env.local，請確認檔案沒有被其他程式鎖住。';
 const LINK_MESSAGE = '.env.local 是捷徑，請改成一般檔案';
@@ -38,6 +48,14 @@ export function cleanValue(key: AllowedKey, raw: string): string {
   const v = raw.trim();
   if (key === 'AZURE_SPEECH_REGION') {
     if (!REGION_PATTERN.test(v)) throw new Error(REGION_MESSAGE);
+    return v;
+  }
+  if (key === 'LOCAL_LLM_URL') {
+    if (v.length > 300 || !LOCAL_URL_PATTERN.test(v)) throw new Error(LOCAL_URL_MESSAGE);
+    return v;
+  }
+  if (key === 'LOCAL_LLM_MODEL') {
+    if (!LOCAL_MODEL_PATTERN.test(v)) throw new Error(LOCAL_MODEL_MESSAGE);
     return v;
   }
   if (!VALUE_PATTERN.test(v)) throw new Error(VALUE_MESSAGE);

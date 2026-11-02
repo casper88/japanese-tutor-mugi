@@ -18,6 +18,7 @@ import {
   type Character, type TutorSettings,
 } from '../game/tutor';
 import { fetchChatGptStatus, takeChatGptReturn, type ChatGptStatus } from '../game/openaiStatus';
+import { fetchLocalStatus, type LocalStatus } from '../game/localStatus';
 import { CHAT_INPUT_MAX_CHARS, clipCodePoints } from '../game/claudeProtocol';
 import { BUILTIN_CHARACTERS, anchorOf, defaultPersonaOf, isBuiltinId } from '../game/tutorCharacters';
 import { speakPlanFor, type CharacterVoice } from '../game/characterVoice';
@@ -93,8 +94,11 @@ export default function TutorView() {
   // ChatGPT's sign-in (game/openaiStatus): null until read
   const [chatgpt, setChatgpt] = useState<ChatGptStatus | null>(null);
   const refreshChatGpt = useCallback(() => { void fetchChatGptStatus().then((s) => { if (s) setChatgpt(s); }); }, []);
+  // the local model server on the PC (game/localStatus): null until read
+  const [local, setLocal] = useState<LocalStatus | null>(null);
+  const refreshLocal = useCallback(() => { void fetchLocalStatus().then((s) => { if (s) setLocal(s); }); }, []);
   // a key was saved in Settings: the server rereads .env.local on each request, so the Claude and speech status are read again now
-  const keysSaved = useCallback(() => { void claudeStatus().then(setClaude); void fetchTtsStatus(); }, []);
+  const keysSaved = useCallback(() => { void claudeStatus().then(setClaude); void fetchTtsStatus(); refreshLocal(); }, [refreshLocal]);
   const [streamText, setStreamText] = useState(''); // her reply while it is still being written
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState('');
@@ -187,6 +191,13 @@ export default function TutorView() {
   useEffect(() => { void claudeStatus().then(setClaude); }, []);
   // back from the ChatGPT sign-in (/?chatgpt=ok): the status is read again, and the marker leaves the address bar
   useEffect(() => { takeChatGptReturn(); refreshChatGpt(); }, [refreshChatGpt]);
+  // the local model is asked for when the page opens and each time it comes back into view (Ollama may have been started since)
+  useEffect(() => {
+    refreshLocal();
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshLocal(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [refreshLocal]);
   useEffect(() => { void fetchTtsStatus(); }, []);
   useEffect(() => { writeTutorChat(chat, chatOwner); }, [chat, chatOwner]);
   // the added backgrounds' pictures, each read once from this device (a failed read means none)
@@ -205,8 +216,10 @@ export default function TutorView() {
   useEffect(() => { if (!note) return; const id = setTimeout(() => setNote(''), LEVEL_NOTE_MS); return () => clearTimeout(id); }, [note]);
 
   const sttLang = settings.sttLang;
-  // a reply can come from any chosen service that is ready (Claude with its key, ChatGPT signed in with the plan)
-  const ready = serviceReady(settings.providers, { anthropic: !!claude?.ok, openai: !!chatgpt?.signedIn && !!chatgpt.planEnabled });
+  // a reply can come from any chosen service that is ready (Claude with its key, ChatGPT signed in with the plan, the local model answering)
+  const ready = serviceReady(settings.providers, {
+    anthropic: !!claude?.ok, openai: !!chatgpt?.signedIn && !!chatgpt.planEnabled, local: !!local?.ok,
+  });
   // her personality as it is sent, and the key that covers it with her name (a change of either starts the request window over)
   const persona = effectivePersona(active);
 
@@ -373,7 +386,7 @@ export default function TutorView() {
   const openSheet = (s: 'character' | 'settings' | 'tips' | 'lookup') => {
     stopMic();
     // the settings show the sign-in as it is now
-    if (s === 'settings') refreshChatGpt();
+    if (s === 'settings') { refreshChatGpt(); refreshLocal(); }
     setSheet(s);
   };
 
@@ -458,7 +471,7 @@ export default function TutorView() {
             {streamText && <li className="her">{rubyNodes(streamText)}</li>}
           </>}
           notes={[
-            !ready && claude !== null && '需要 AI 服務：請到設定的「AI 服務」設定 Claude 金鑰，或登入 ChatGPT',
+            !ready && claude !== null && '需要 AI 服務：請到設定的「AI 服務」設定 Claude 金鑰、登入 ChatGPT，或啟動本地模型',
             note || voice.note || (mic.listening ? `聆聽中…（${sttLang === 'ja-JP' ? '日文' : '中文'}）` : ''),
           ]}
           pill={voice.active ? { phase: voice.phase, label: VOICE_LABEL[voice.phase], onStop: voice.stop } : undefined}
@@ -530,7 +543,8 @@ export default function TutorView() {
           <SoundSection audio={audio} tts={tts} cloud={cloud} volumes={['music', 'voice']} />
           <CloudKeysSection onSaved={keysSaved} />
           <AiServiceSection theme="dark" providers={settings.providers} openaiModel={settings.openaiModel}
-            claudeOk={claude === null ? null : claude.ok} chatgpt={chatgpt} onChange={(patch) => setPrefs(patch)} onRefresh={refreshChatGpt} onKeysSaved={keysSaved} />
+            claudeOk={claude === null ? null : claude.ok} chatgpt={chatgpt} local={local} onChange={(patch) => setPrefs(patch)} onRefresh={refreshChatGpt}
+            onRefreshLocal={refreshLocal} onKeysSaved={keysSaved} />
           <BudgetSection />
           <ModelSection theme="dark" chatModel={settings.chatModel} helperModel={settings.helperModel}
             serverModel={claude === null ? null : claude.model} onChange={(patch) => setPrefs(patch)} />
