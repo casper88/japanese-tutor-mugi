@@ -101,18 +101,24 @@ describe('request conversion (Anthropic shape → Chat Completions)', () => {
 });
 
 describe('a small model writes the player’s line correctly first (corrected)', () => {
-  it('its schema has corrected first, every field required and no other; Claude keeps the three-field schema and prompt', () => {
-    expect(Object.keys(CHAT_REPLY_SCHEMA_SMALL.properties)).toEqual(['corrected', 'segments', 'tip', 'tone']);
-    expect([...CHAT_REPLY_SCHEMA_SMALL.required]).toEqual(['corrected', 'segments', 'tip', 'tone']);
+  it('its schema is corrected first, then segments and tone, no tip; Claude keeps its schema and prompt', () => {
+    expect(Object.keys(CHAT_REPLY_SCHEMA_SMALL.properties)).toEqual(['corrected', 'segments', 'tone']);
+    expect([...CHAT_REPLY_SCHEMA_SMALL.required]).toEqual(['corrected', 'segments', 'tone']);
     expect(CHAT_REPLY_SCHEMA_SMALL.additionalProperties).toBe(false);
     const small = systemPrompt('Mugi', undefined, undefined, { smallModel: true });
-    expect(small).toContain('四個欄位');
     expect(small).toContain('corrected');
+    expect(small).not.toContain('tip');
+    expect(small.length).toBeLessThan(systemPrompt('Mugi').length);
+    // the player's own name and personality reach the small prompt too
+    const own = systemPrompt('Mugi', '說話用大阪腔', '結衣', { smallModel: true });
+    expect(own).toContain('「結衣」');
+    expect(own).toContain('個性：說話用大阪腔');
     expect(systemPrompt('Mugi')).not.toContain('corrected');
     const claude = chatRequest(sample, 'claude-haiku-5-5');
     expect(claude.output_config?.format?.schema).toBe(CHAT_REPLY_SCHEMA);
     expect(JSON.stringify(claude.system)).not.toContain('corrected');
     expect(reminderPrompt({ smallModel: true })).toContain('corrected');
+    expect(reminderPrompt({ smallModel: true })).not.toContain('tip');
   });
 
   it('saidOf leaves the player’s words only', () => {
@@ -152,14 +158,13 @@ describe('a small model writes the player’s line correctly first (corrected)',
     expect(q.tip).toBe('這句話的日文可以說 <ja>東京に行きますか？</ja>');
   });
 
-  it('a tip the model wrote gets the corrected line after it when it does not hold it (Qwen3 8B: right correction, tip about a comma)', async () => {
-    const off = reply({ corrected: '昨日、友達に会いました', tip: '加上「、」讓語氣更柔和' });
-    expect(JSON.parse(await tipFromCorrection(off, '昨日友達に会うました')).tip).toBe('加上「、」讓語氣更柔和。可以說成 <ja>昨日、友達に会いました</ja>。');
-    const zh = reply({ corrected: 'このラーメン屋はとてもおいしいです。', tip: '「很好吃」是 <ja>おいしい</ja>' });
-    expect(JSON.parse(await tipFromCorrection(zh, '這家拉麵很好吃')).tip).toBe('「很好吃」是 <ja>おいしい</ja>。日文可以說 <ja>このラーメン屋はとてもおいしいです。</ja>');
-    // the model's own tip on a sentence its correction leaves the same is not touched
-    const same = reply({ corrected: '週末は家で休みました', tip: '很自然' });
-    expect(await tipFromCorrection(same, '週末は家で休みました')).toBe(same);
+  it('a tip the model wrote anyway is replaced by the corrected line (Qwen3 8B: right correction, wrong explanation)', async () => {
+    const off = reply({ corrected: '昨日、友達に会いました', tip: '把「に」改成「と」，因為「会う」是及物動詞' });
+    expect(JSON.parse(await tipFromCorrection(off, '昨日友達に会うました')).tip).toBe('這句可以說成 <ja>昨日、友達に会いました</ja>。');
+    const zh = reply({ corrected: 'このラーメン屋はとてもおいしいです。', tip: '「行く」要改成「行きます」，因為是敬語' });
+    expect(JSON.parse(await tipFromCorrection(zh, '這家拉麵很好吃')).tip).toBe('這句話的日文可以說 <ja>このラーメン屋はとてもおいしいです。</ja>');
+    // a sentence the correction leaves the same gets no tip, whatever the model wrote
+    expect(JSON.parse(await tipFromCorrection(reply({ corrected: '週末は家で休みました', tip: '要改成…' }), '週末は家で休みました')).tip).toBe('');
   });
 
   it('an empty tip is written from the translation of his Chinese', async () => {
@@ -170,8 +175,6 @@ describe('a small model writes the player’s line correctly first (corrected)',
   it('the reply stays as it is: the same line (kanji as kana, punctuation), a tip already written, no correction, cut JSON', async () => {
     const same = reply({ corrected: '週末は家でゆっくり休みました。' });
     expect(await tipFromCorrection(same, '週末は家でゆっくりやすみました')).toBe(same);
-    const holds = reply({ corrected: '昨日は寒かったです', tip: '要用過去式：<ja>昨日は寒かったです</ja>。' });
-    expect(await tipFromCorrection(holds, '昨日は寒いです')).toBe(holds);
     const none = reply({ corrected: '' });
     expect(await tipFromCorrection(none, '昨日は寒いです')).toBe(none);
     const chinese = reply({ corrected: '昨天很冷' });

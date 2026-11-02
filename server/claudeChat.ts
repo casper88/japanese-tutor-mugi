@@ -441,16 +441,20 @@ export const CHAT_REPLY_SCHEMA = {
 } as const;
 
 /**
- * Her reply from a small local model (smallModel): CHAT_REPLY_SCHEMA with `corrected` first, the player's line written as
- * correct Japanese (his Chinese translated). The model writes it before it replies, which makes it check the line, and the
- * server writes the tip from it when the model leaves the tip empty (replyFix.ts tipFromCorrection). It is dropped from what is
- * shown and stored (the canonical reply has segments, tip and tone only).
+ * Her reply from a small local model (smallModel): `corrected` first, the player's line written as correct Japanese (his Chinese
+ * translated), then her segments and tone, and no tip: the server writes the tip from `corrected` (replyFix.ts
+ * tipFromCorrection), since a small model's own explanations were often wrong. `corrected` is dropped from what is shown and
+ * stored (the canonical reply has segments, tip and tone only).
  */
 export const CHAT_REPLY_SCHEMA_SMALL = {
   type: 'object',
   additionalProperties: false,
-  required: ['corrected', 'segments', 'tip', 'tone'],
-  properties: { corrected: { type: 'string' }, ...CHAT_REPLY_SCHEMA.properties },
+  required: ['corrected', 'segments', 'tone'],
+  properties: {
+    corrected: { type: 'string' },
+    segments: CHAT_REPLY_SCHEMA.properties.segments,
+    tone: CHAT_REPLY_SCHEMA.properties.tone,
+  },
 } as const;
 
 /**
@@ -770,8 +774,8 @@ export async function streamReply(services: Service[], body: ChatBody, io: Reply
       const final: LlmResult = await stream.done;
       if (svc.spend) io.spendDone(svc, final);
       recorded = true;
-      // a small model's own readings are removed first, so every reading comes from the analyser (fixReplyJson), and an empty
-      // tip is written from its correction of the player's line
+      // a small model's own readings are removed first, so every reading comes from the analyser (fixReplyJson), and its tip is
+      // made from its correction of the player's line
       const text = svc.provider.smallModel ? await tipFromCorrection(stripReadings(final.text), said) : final.text;
       await io.finish(svc, { ...final, text });
       return svc;

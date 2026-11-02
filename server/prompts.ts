@@ -33,15 +33,15 @@ const TEACHER_REMINDER = `格式細節（每則回覆都要遵守）：
 
 
 /**
- * The reminder for a small local model (smallModel): the same rules, shorter, with no example (a small model copies it word for
- * word instead of answering) and no readings (the server adds them all, server/readings.ts). It goes before the player's words
- * (upstreamMessages), so what the player said is the last thing the model reads.
+ * The reminder for a small local model (smallModel): short, with no example (a small model copies it word for word instead of
+ * answering), no readings (the server adds them all, server/readings.ts) and no tip (the server writes it from `corrected`,
+ * server/replyFix.ts tipFromCorrection). It goes before the player's words (upstreamMessages), so what the player said is the
+ * last thing the model reads.
  */
 const TEACHER_REMINDER_PLAIN = `回覆規則：
 - 先寫 corrected：把他下面這句話（不含［］裡的標記）寫成正確、自然的日文。他說中文：翻成日文。他說日文：逐一檢查助詞、時態、動詞和形容詞的變化、用詞，把錯的地方改掉；完全沒錯就照抄。
 - segments 要直接回應他這句話的內容，像朋友聊天一樣接話，最多兩句日文。
-- tip：corrected 和他說的日文不一樣時，tip 一定要寫，用一句繁體中文說明改了哪裡、為什麼。他說中文時，tip 教他 corrected 這句日文。完全沒錯：tip 給 ""。
-- gloss 和 tip 一律用繁體中文（不要用簡體字）；tip 裡的日文放在 <ja>…</ja> 裡。text 只放日文。
+- gloss 一律用繁體中文（不要用簡體字）。text 只放日文。
 - 漢字後面不要加方括號或讀音，讀音由系統自動加上。`;
 
 /** `text` with `from` replaced by `to`; throws when `from` is not in it, so a variant never drifts away from its prompt unnoticed */
@@ -87,24 +87,24 @@ export function systemPrompt(role: ChatRoleId, persona?: string, name?: string, 
 個性：${traits}${persona === undefined ? '' : '\n'}稱呼對方為「你」。
 ${TEACHER_BASE}
 ${TUTOR_OUTPUT_RULES}`;
-  return opts.smallModel ? smallModelFormat(prompt) : prompt;
+  return opts.smallModel ? smallModelPrompt(name ?? p.name, traits, persona !== undefined) : prompt;
 }
 
 /**
- * The reply format of a small model (smallModel): a fourth field, corrected, comes first. Writing his line out correctly is
- * a task a small model does far better than spotting a mistake in passing, and the server writes the tip from it when the
- * model leaves the tip empty (server/replyFix.ts tipFromCorrection).
+ * The system prompt of a small local model (smallModel): the same tutor and personality, shorter, and its own reply format.
+ * The model writes no tip: its explanations were wrong about half the time (Qwen3 8B: 会うました explained as に → と), while
+ * the corrected line it writes first was right 8 times out of 8. So it writes `corrected` (his line as correct Japanese, his
+ * Chinese translated), and the server makes the tip from it (server/replyFix.ts tipFromCorrection).
  */
-function smallModelFormat(prompt: string): string {
-  return variantOf(
-    variantOf(
-      prompt,
-      '- 你的回覆是一個 JSON 物件，三個欄位：\n',
-      '- 你的回覆是一個 JSON 物件，四個欄位：\n  · corrected：他剛說的那句話的正確日文（他說中文就翻成日文；他說日文就改掉錯誤，沒錯就照抄）。只給系統看，不會顯示。\n',
-    ),
-    '只有 segments、tip、tone 三個欄位',
-    '只有 corrected、segments、tip、tone 四個欄位',
-  );
+function smallModelPrompt(name: string, traits: string, ownPersona: boolean): string {
+  return `你是「${name}」，一位住在使用者身邊、專門教他日語的家教。你正在和使用者一對一練習日語。
+個性：${traits}${ownPersona ? '\n' : ''}稱呼對方為「你」。
+你是他的日語會話夥伴：像朋友面對面一樣輕鬆聊天，讓他多開口講日文。每次最多兩句日文，用短句、常用詞，保持你的個性與語氣。
+你的回覆是一個 JSON 物件，只有三個欄位：
+· corrected：他剛說的那句話的正確日文（他說中文就翻成日文；他說日文就改掉錯誤，沒錯就照抄）。只給系統看，不會顯示。
+· segments：你說的日文，一段一段排好（通常一段一句）。每段有 lang、text、gloss：lang 一律是 "ja"；text 是日文台詞，會被唸出來；gloss 是這段的簡短繁體中文意思。
+· tone：這句話的語氣，只能是這些之一：${CHAT_TONES.join(', ')}。
+不要 Markdown、不要 JSON 以外的文字。`;
 }
 
 /**

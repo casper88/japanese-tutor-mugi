@@ -154,35 +154,33 @@ export function addedShare(said: string, corrected: string): number {
 export const CORRECTION_MAX_ADDED = 0.4;
 
 /**
- * A small model's reply (smallModel) starts with `corrected`: the player's line written as correct Japanese (his Chinese
- * translated). Writing that is easier for a small model than spotting a mistake while it chats, and it shows what the model
- * found even when its tip says something else or nothing. So the corrected line is made part of the tip:
+ * The tip of a small model's reply (smallModel), made from its `corrected`: the player's line written as correct Japanese (his
+ * Chinese translated). The model writes no tip of its own: its explanations were wrong about half the time, while its corrected
+ * line was right (Qwen3 8B: 8 of 8). So the tip shows the corrected line only:
  * - his Chinese → 「這句話的日文可以說 <ja>…</ja>」;
  * - his Japanese, when the correction says it differently (compared by the kana of its words, so a kanji written as kana is no
- *   change) and adds no more than a correction would (addedShare) → 「這句可以說成 <ja>…</ja>」.
- * An empty tip becomes that line; a tip the model wrote gets it after its own text, unless the tip already holds the corrected
- * line (tested on Qwen3 8B: the correction was right while its tip talked about a comma). No correction, the same sentence, a
- * rewrite of the model's own or a reply that is not complete JSON leaves the reply as it is. `said`: the player's words (saidOf).
+ *   change) and adds no more than a correction would (addedShare) → 「這句可以說成 <ja>…</ja>」;
+ * - anything else (no correction, the same sentence, a rewrite of the model's own) → no tip.
+ * A tip the model wrote anyway (a server that does not hold to the schema) is replaced. A reply that is not complete JSON is left
+ * as it is. `said`: the player's words (saidOf).
  */
 export async function tipFromCorrection(raw: string, said: string): Promise<string> {
   let j: unknown;
   try { j = JSON.parse(raw); } catch { return raw; }
   if (!j || typeof j !== 'object' || Array.isArray(j)) return raw;
   const o = j as Record<string, unknown>;
-  const corrected = typeof o.corrected === 'string' ? o.corrected.replace(/<\/?ja>/g, '').trim() : '';
-  const tip = typeof o.tip === 'string' ? o.tip.trim() : '';
-  if (!said || !KANA.test(corrected)) return raw;
-  const chinese = !KANA.test(said);
-  if (!chinese) {
-    const before = await sayingOf(said);
-    const after = await sayingOf(corrected);
-    if (before === after || addedShare(before, after) > CORRECTION_MAX_ADDED) return raw;
-  }
-  const bare = (t: string) => t.replace(/<\/?ja>/g, '').replace(NOT_WORDS, '');
-  if (tip && bare(tip).includes(bare(corrected))) return raw;
+  return JSON.stringify({ ...o, tip: await correctionTip(typeof o.corrected === 'string' ? o.corrected : '', said) });
+}
+
+/** the tip of tipFromCorrection: the corrected line, or '' when it teaches nothing */
+async function correctionTip(raw: string, said: string): Promise<string> {
+  const corrected = raw.replace(/<\/?ja>/g, '').trim();
+  if (!said || !KANA.test(corrected)) return '';
   // the Japanese keeps its own end mark (。！？); the tip adds 。 only after one that has none
   const line = `<ja>${corrected}</ja>${/[。！？!?]$/.test(corrected) ? '' : '。'}`;
-  const added = chinese ? `${tip ? '日文' : '這句話的日文'}可以說 ${line}` : `${tip ? '' : '這句'}可以說成 ${line}`;
-  const lead = tip ? `${tip}${/[。！？!?]$/.test(tip) ? '' : '。'}` : '';
-  return JSON.stringify({ ...o, tip: `${lead}${added}` });
+  if (!KANA.test(said)) return `這句話的日文可以說 ${line}`;
+  const before = await sayingOf(said);
+  const after = await sayingOf(corrected);
+  if (before === after || addedShare(before, after) > CORRECTION_MAX_ADDED) return '';
+  return `這句可以說成 ${line}`;
 }
