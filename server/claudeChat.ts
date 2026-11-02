@@ -390,19 +390,20 @@ export function parseChatBody(raw: string): ChatBody {
  * The upstream messages for a validated body. The history goes through exactly as the client sent it (each turn's text is
  * frozen when sent, see claudeProtocol.userTurn), and only the NEWEST user message gets the volatile reminder appended
  * (reminderPrompt, in a <reminder> tag). The reminder is never stored, so every earlier message is byte-identical from
- * one request to the next. `serverReadings` (the local models): the readings are left out of her earlier lines, and the
- * reminder asks for none (the server writes them all).
+ * one request to the next. `smallModel` (the local models): the readings are left out of her earlier lines, the reminder is
+ * the short one (no example, no readings) and it goes before the player's words, so they are the last thing the model reads.
  *
  * Cache breakpoints: the system block (stable per role and mode) and the last message before the newest user turn, which
  * is the end of the stable history. The newest user turn carries no breakpoint: its bytes (the reminder) are volatile and
  * are re-sent without it next turn, so caching them would never hit again.
  */
-export function upstreamMessages(messages: ChatMessage[], opts: { serverReadings?: boolean } = {}): BetaMessageStreamParams['messages'] {
+export function upstreamMessages(messages: ChatMessage[], opts: { smallModel?: boolean } = {}): BetaMessageStreamParams['messages'] {
   const n = messages.length;
   return messages.map((m, i) => {
     // a model whose readings the server writes is never shown any: her earlier lines go without them
-    const content = opts.serverReadings && m.role === 'assistant' ? stripReadings(m.content) : m.content;
-    const text = i === n - 1 ? `${content}\n\n<reminder>${reminderPrompt(opts)}</reminder>` : content;
+    const content = opts.smallModel && m.role === 'assistant' ? stripReadings(m.content) : m.content;
+    const reminder = `<reminder>${reminderPrompt(opts)}</reminder>`;
+    const text = i !== n - 1 ? content : opts.smallModel ? `${reminder}\n\n${content}` : `${content}\n\n${reminder}`;
     if (i === n - 2) {
       return { role: m.role, content: [{ type: 'text', text, cache_control: { type: 'ephemeral' } }] };
     }
@@ -442,9 +443,9 @@ export const CHAT_REPLY_SCHEMA = {
 /**
  * The upstream request for a validated body: model, the stable system block with its breakpoint, and the messages from
  * upstreamMessages. No top-level cache_control: the automatic marker would sit on the volatile newest turn.
- * `serverReadings`: the provider's (see upstreamMessages).
+ * `smallModel`: the provider's (see upstreamMessages).
  */
-export function chatRequest(body: ChatBody, model: string, opts: { serverReadings?: boolean } = {}): LlmChatRequest {
+export function chatRequest(body: ChatBody, model: string, opts: { smallModel?: boolean } = {}): LlmChatRequest {
   return {
     model,
     max_tokens: 2000,
@@ -635,7 +636,7 @@ export function tipFromFixReply(text: string): string {
 /**
  * Rewrites one 小提醒 that came back with Japanese prose. The inner text (with its <ja> tags) goes in; the rewritten tip
  * comes back with its readings filled, or null when it still does not read as Chinese. A provider whose readings the server
- * writes (serverReadings) gets the tip without readings and is asked for none.
+ * writes (smallModel) gets the tip without readings and is asked for none.
  */
 export async function rewriteTipWith(
   provider: LlmProvider,
@@ -643,7 +644,7 @@ export async function rewriteTipWith(
   onUsage?: (model: string, usage: ClaudeUsage) => void,
   model: string = TIP_FIX_MODEL,
 ): Promise<string | null> {
-  const plain = !!provider.serverReadings;
+  const plain = !!provider.smallModel;
   const msg = await provider.complete({
     model,
     max_tokens: TIP_FIX_MAX_TOKENS,
@@ -736,7 +737,7 @@ export async function streamReply(services: Service[], body: ChatBody, io: Reply
   for (let i = 0; i < services.length; i++) {
     const svc = services[i];
     const last = i === services.length - 1;
-    const upstream: LlmChatRequest = chatRequest(body, svc.model, { serverReadings: svc.provider.serverReadings });
+    const upstream: LlmChatRequest = chatRequest(body, svc.model, { smallModel: svc.provider.smallModel });
     // the reply text sent so far (for the spend estimate when the stream ends early without usage)
     let replyChars = 0;
     // whether any text reached the player: only a stream that sent nothing may move on to the next service
@@ -754,7 +755,7 @@ export async function streamReply(services: Service[], body: ChatBody, io: Reply
       if (svc.spend) io.spendDone(svc, final);
       recorded = true;
       // a local model's own readings are removed first, so every reading comes from the analyser (fixReplyJson)
-      await io.finish(svc, svc.provider.serverReadings ? { ...final, text: stripReadings(final.text) } : final);
+      await io.finish(svc, svc.provider.smallModel ? { ...final, text: stripReadings(final.text) } : final);
       return svc;
     } catch (e) {
       // a stream that ended early (the player left, the upstream failed or hit the time limit) still spends what it used
@@ -1033,7 +1034,7 @@ export function parseLookupBody(raw: string): string {
 /**
  * One lookup: the model's reply parsed into an answer (null when it is not readable JSON: the raw text goes back instead),
  * and every <ja> field gets the kanji readings it lacks (readings.ts), as the chat replies do. A provider whose readings the
- * server writes (serverReadings) is asked for none, and any it writes are removed first.
+ * server writes (smallModel) is asked for none, and any it writes are removed first.
  */
 export async function lookupAnswerWith(
   provider: LlmProvider,
@@ -1046,7 +1047,7 @@ export async function lookupAnswerWith(
     max_tokens: LOOKUP_MAX_TOKENS,
     thinking: { type: 'disabled' },
     output_config: { format: { type: 'json_schema', schema: LOOKUP_SCHEMA } },
-    system: provider.serverReadings ? LOOKUP_SYSTEM_PLAIN : LOOKUP_SYSTEM,
+    system: provider.smallModel ? LOOKUP_SYSTEM_PLAIN : LOOKUP_SYSTEM,
     messages: [{ role: 'user', content: q }],
     schemaName: 'mugi_lookup',
   }, { timeout: LOOKUP_TIMEOUT_MS });
@@ -1055,7 +1056,7 @@ export async function lookupAnswerWith(
   const answer = parseLookupText(raw);
   if (!answer) return { answer: null, raw };
   const log = (m: string) => console.warn(m);
-  const own = (t: string) => (provider.serverReadings ? stripReadings(t) : t);
+  const own = (t: string) => (provider.smallModel ? stripReadings(t) : t);
   for (const it of answer.items) it.ja = await fillReadings(own(it.ja), log);
   for (const g of answer.grammar) if (g.point) g.point = await fillReadings(own(g.point), log);
   for (const ex of answer.examples) ex.ja = await fillReadings(own(ex.ja), log);

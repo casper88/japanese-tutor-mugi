@@ -155,7 +155,7 @@ export async function fillReadings(text: string, log: (m: string) => void = cons
 const MODEL_RUBY = /([\p{Script=Han}々〆ヶ]+)\[[ぁ-ゖァ-ヺー・]{1,30}\]/gu;
 
 /**
- * The text with every reading a model wrote removed (学校[がっこう]に → 学校に). Used for the local models (serverReadings, see
+ * The text with every reading a model wrote removed (学校[がっこう]に → 学校に). Used for the local models (smallModel, see
  * server/llm/provider.ts): their readings are not trusted, and fillReadings then writes them all from the analyser. Works on
  * plain text and on the JSON text of a reply alike.
  */

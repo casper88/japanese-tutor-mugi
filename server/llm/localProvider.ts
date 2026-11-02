@@ -4,15 +4,18 @@
 // max_tokens → max_tokens, the JSON schema → response_format json_schema (the local server limits the output to it). A server
 // that refuses that format (llama-cpp-python takes only the older json_object with a schema) is asked again in the older one,
 // and that is remembered for its address. The stream is on. A local model costs nothing, so nothing is recorded against the daily Claude budget.
-// The server writes every kanji reading for a local model (serverReadings): small models often get them wrong.
+// The server writes every kanji reading for a local model (smallModel): small models often get them wrong.
 import type { LlmChatRequest, LlmCompleteOptions, LlmCompleteRequest, LlmProvider, LlmResult, LlmStream } from './provider.ts';
 import { defaultDescribeError } from './provider.ts';
 import { readSSE, systemTextOf, textOf } from './openaiProvider.ts';
 
 /** the whole local reply (stream included) must finish within this long: a model loaded for the first time can take a while */
 export const LOCAL_STREAM_TIMEOUT_MS = 180_000;
-/** the shortest time limit of a one-shot request (judge, tip rewrite, lookup): a local model is slower than the cloud ones */
-export const LOCAL_MIN_TIMEOUT_MS = 30_000;
+/**
+ * the shortest time limit of a one-shot request (judge, tip rewrite, lookup): a local model is slower than the cloud ones, and a
+ * lookup has a prompt of its own that the server cannot reuse (a 4B model on a 4-core CPU took over 30 s)
+ */
+export const LOCAL_MIN_TIMEOUT_MS = 90_000;
 /** the schema name when a request names none (every call site names its own: mugi_reply, mugi_judge, mugi_tip, mugi_lookup) */
 const DEFAULT_SCHEMA_NAME = 'mugi_output';
 /** the longest piece of the local server's own error text that goes into a message */
@@ -242,7 +245,7 @@ export function localProvider(transport: LocalTransport, opts: { key?: string } 
   }
   return {
     id: 'local',
-    serverReadings: true,
+    smallModel: true,
     streamChat(req: LlmChatRequest, onDelta: (text: string) => void): LlmStream {
       const { stop, done } = limited(req, onDelta, LOCAL_STREAM_TIMEOUT_MS);
       return { abort: stop, done, usageSoFar: () => undefined };

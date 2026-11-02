@@ -53,11 +53,12 @@ export type LlmStream = {
 export interface LlmProvider {
   id: ProviderId;
   /**
-   * true when the server writes every kanji reading itself (the local models: a small model often gets readings wrong). The model
-   * is told not to write them, the readings in the history it is sent are removed, and any it writes anyway are removed before
-   * kuromoji fills them all in (server/readings.ts stripReadings, fillReadings).
+   * true for a small local model: the prompt is shaped for it (tested on Qwen3 4B, which copied the example of the full
+   * reminder and drifted away from what the player said). Its reminder has no example to copy and comes before the player's
+   * words, and the server writes every kanji reading itself: the model is told not to write them, the readings in the history
+   * it is sent are removed, and any it writes anyway are removed before kuromoji fills them all in (server/readings.ts).
    */
-  serverReadings?: boolean;
+  smallModel?: boolean;
   /** deltas go to onDelta as they arrive; the returned stream carries the end */
   streamChat(req: LlmChatRequest, onDelta: (text: string) => void): LlmStream;
   complete(req: LlmCompleteRequest, opts?: LlmCompleteOptions): Promise<LlmResult>;

@@ -67,7 +67,7 @@ function transportWith(answer: string | (() => Response)) {
 
 describe('request conversion (Anthropic shape → Chat Completions)', () => {
   it('the system text is the first message; the history is plain text; the schema is response_format json_schema', () => {
-    const body = chatCompletionsBody(chatRequest(sample, 'qwen3:8b', { serverReadings: true }));
+    const body = chatCompletionsBody(chatRequest(sample, 'qwen3:8b', { smallModel: true }));
     expect(body.model).toBe('qwen3:8b');
     expect(body.max_tokens).toBe(2000);
     expect(body.stream).toBe(true);
@@ -81,10 +81,10 @@ describe('request conversion (Anthropic shape → Chat Completions)', () => {
     expect(text).not.toContain('fallbacks');
   });
 
-  it('a local model is shown no readings: her earlier lines go without them, and the reminder asks for none', () => {
-    const messages = chatCompletionsBody(chatRequest(sample, 'm', { serverReadings: true })).messages as { content: string }[];
+  it('a local model is shown no readings, and gets the short reminder before the player’s words (Claude: the full one after)', () => {
+    const messages = chatCompletionsBody(chatRequest(sample, 'm', { smallModel: true })).messages as { content: string }[];
     expect(messages[2].content).toBe('{"segments":[{"lang":"ja","text":"学校に行ったの？","gloss":"去學校了嗎？"}],"tone":"happy"}');
-    expect(messages[3].content).toBe(`是的\n\n<reminder>${reminderPrompt({ serverReadings: true })}</reminder>`);
+    expect(messages[3].content).toBe(`<reminder>${reminderPrompt({ smallModel: true })}</reminder>\n\n是的`);
     // Claude still gets the readings and the reminder that asks for them
     const claude = chatCompletionsBody(chatRequest(sample, 'claude-haiku-5-5')).messages as { content: string }[];
     expect(claude[2].content).toContain('学校[がっこう]');
@@ -100,12 +100,15 @@ describe('request conversion (Anthropic shape → Chat Completions)', () => {
 
 describe('the prompts for a model whose readings the server writes', () => {
   it('the reminder, the lookup and the tip rewrite ask for no readings (no bracketed example left)', () => {
-    for (const p of [reminderPrompt({ serverReadings: true }), LOOKUP_SYSTEM_PLAIN, TIP_FIX_SYSTEM_PLAIN]) {
+    for (const p of [reminderPrompt({ smallModel: true }), LOOKUP_SYSTEM_PLAIN, TIP_FIX_SYSTEM_PLAIN]) {
       expect(p).not.toMatch(/[\p{Script=Han}]\[[ぁ-ゖ]+\]/u);
       expect(p).toContain('不要');
       expect(p).toContain('讀音');
     }
     expect(reminderPrompt()).toMatch(/学校\[がっこう\]/);
+    // a small model copied the example reply word for word: its reminder has none
+    expect(reminderPrompt({ smallModel: true })).not.toContain('"segments"');
+    expect(reminderPrompt()).toContain('"segments"');
   });
 });
 
@@ -183,9 +186,9 @@ describe('localProvider', () => {
     const { transport, sent } = transportWith(events([delta('{"tone":'), delta('"happy"}'), finish()]));
     const p = localProvider(transport);
     expect(p.id).toBe('local');
-    expect(p.serverReadings).toBe(true);
+    expect(p.smallModel).toBe(true);
     const got: string[] = [];
-    const s = p.streamChat(chatRequest(sample, 'qwen3:8b', { serverReadings: true }), (t) => got.push(t));
+    const s = p.streamChat(chatRequest(sample, 'qwen3:8b', { smallModel: true }), (t) => got.push(t));
     const r = await s.done;
     expect(r.text).toBe('{"tone":"happy"}');
     expect(got).toEqual(['{"tone":', '"happy"}']);
@@ -379,7 +382,7 @@ describe('servicesFor with the local model', () => {
     const localFetch = vi.fn(async () => { throw new Error('not called'); });
     const r = await ask(['local'], { url: LOCAL_LLM_URL_DEFAULT, model: 'qwen3:8b', apiKey: '' }, localFetch as unknown as typeof fetch);
     expect(r.services.map((s) => [s.id, s.model, s.spend, s.hold])).toEqual([['local', 'qwen3:8b', false, undefined]]);
-    expect(r.services[0].provider.serverReadings).toBe(true);
+    expect(r.services[0].provider.smallModel).toBe(true);
     expect(localFetch).not.toHaveBeenCalled();
   });
 
