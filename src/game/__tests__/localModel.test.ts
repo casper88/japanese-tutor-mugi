@@ -132,6 +132,13 @@ describe('a small model writes the player’s line correctly first (corrected)',
     expect(out.tip).toBe('這句可以說成 <ja>昨日はとても寒かったです</ja>。');
   });
 
+  it('a correction that ends with its own 。 or ？ gets no second one', async () => {
+    const out = JSON.parse(await tipFromCorrection(reply({ corrected: '私は学生です。' }), '私は学生だです'));
+    expect(out.tip).toBe('這句可以說成 <ja>私は学生です。</ja>');
+    const q = JSON.parse(await tipFromCorrection(reply({ corrected: '東京に行きますか？' }), '你要去東京嗎'));
+    expect(q.tip).toBe('這句話的日文可以說 <ja>東京に行きますか？</ja>');
+  });
+
   it('an empty tip is written from the translation of his Chinese', async () => {
     const out = JSON.parse(await tipFromCorrection(reply({ corrected: '明日東京に行きます' }), '我明天要去東京'));
     expect(out.tip).toBe('這句話的日文可以說 <ja>明日東京に行きます</ja>。');

@@ -142,7 +142,9 @@ export async function tipFromCorrection(raw: string, said: string): Promise<stri
   const corrected = typeof o.corrected === 'string' ? o.corrected.replace(/<\/?ja>/g, '').trim() : '';
   const tip = typeof o.tip === 'string' ? o.tip.trim() : '';
   if (tip || !said || !KANA.test(corrected)) return raw;
-  if (!KANA.test(said)) return JSON.stringify({ ...o, tip: `這句話的日文可以說 <ja>${corrected}</ja>。` });
+  // the Japanese keeps its own end mark (。！？); the tip adds 。 only after one that has none
+  const line = `<ja>${corrected}</ja>${/[。！？!?]$/.test(corrected) ? '' : '。'}`;
+  if (!KANA.test(said)) return JSON.stringify({ ...o, tip: `這句話的日文可以說 ${line}` });
   if ((await sayingOf(said)) === (await sayingOf(corrected))) return raw;
-  return JSON.stringify({ ...o, tip: `這句可以說成 <ja>${corrected}</ja>。` });
+  return JSON.stringify({ ...o, tip: `這句可以說成 ${line}` });
 }
