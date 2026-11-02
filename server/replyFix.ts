@@ -8,7 +8,7 @@
 //      canonical form, so what is stored and sent back to Claude is always a complete, valid JSON object.
 import { canonicalReplyJson, parsePartialJson, readReplyValue, toSegments } from '../src/game/replyJson.ts';
 import type { ChatSegment } from '../src/game/claudeProtocol.ts';
-import { fillReadings } from './readings.ts';
+import { fillReadings, loadAnalyzer, toHira } from './readings.ts';
 
 const JA = /<ja>([\s\S]*?)<\/ja>/g;
 const KANA = /[\u3040-\u30ff\uff66-\uff9d]/;
@@ -102,4 +102,113 @@ export async function fixReplyJson(raw: string, opts: FixOptions = {}): Promise<
   if (wrapped !== written) log(`[tip] Japanese in the tip wrapped in <ja>: ${written.slice(0, 60)}`);
   const tip = wrapped ? await fillReadings(wrapped, log) : '';
   return { json: canonicalReplyJson({ segments, tip, tone: fields.tone }), tipRewrite };
+}
+
+/** the player's own words in his turn: the ［情境］［模式］ marks in front (claudeProtocol.userTurn) removed */
+export function saidOf(turn: string): string {
+  return turn.replace(/^(?:［[^］]*］)+/, '').trim();
+}
+
+/** punctuation and spaces, which never make a sentence wrong */
+const NOT_WORDS = /[\s、。，,．.！!？?「」『』（）()…〜~・]/g;
+
+/**
+ * A line as it is compared: punctuation and spaces removed, then every word as its kana (so 寒かった and さむかった are the same
+ * line). Without the analyser, the text without punctuation.
+ */
+export async function sayingOf(text: string): Promise<string> {
+  const bare = text.replace(NOT_WORDS, '');
+  try {
+    const tk = await loadAnalyzer();
+    return tk.tokenize(bare).map((t) => toHira(t.reading && t.reading !== '*' ? t.reading : t.surface_form)).join('');
+  } catch {
+    return bare;
+  }
+}
+
+/** the length of the longest run of characters that `a` and `b` share in order (not necessarily side by side) */
+function commonLength(a: string, b: string): number {
+  const x = [...a];
+  const y = [...b];
+  let prev = new Array<number>(y.length + 1).fill(0);
+  for (let i = 1; i <= x.length; i++) {
+    const cur = [0];
+    for (let j = 1; j <= y.length; j++) cur[j] = x[i - 1] === y[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+    prev = cur;
+  }
+  return prev[y.length];
+}
+
+/**
+ * How much a correction adds to the line it corrects, as a share of the line (compared as kana, see sayingOf). A real
+ * correction changes an ending or a particle; a small model that answers in `corrected` instead adds a phrase of its own.
+ * Measured on Qwen3 4B: real corrections added at most 0.29 (おいしいでした → おいしかったです); rewrites that were not
+ * corrections added 0.44 and 0.50.
+ */
+export function addedShare(said: string, corrected: string): number {
+  const n = [...said].length;
+  return n ? ([...corrected].length - commonLength(said, corrected)) / n : 1;
+}
+
+/** above this added share, a correction is taken for a rewrite of the model's own and gives no tip */
+export const CORRECTION_MAX_ADDED = 0.4;
+
+/**
+ * How many negations a line holds: the negative endings (ない, ぬ, the ん of ません) and the adjective ない. A correction never
+ * turns what the player said into its opposite (Qwen3 8B "corrected" 先週東京へ行きます to 行きませんでした twice), so a
+ * correction with more of them than his line is not taken. 0 when the analyser is not available.
+ */
+export async function negations(text: string): Promise<number> {
+  try {
+    const tk = await loadAnalyzer();
+    const tokens = tk.tokenize(text) as { pos?: string; basic_form?: string }[];
+    return tokens.filter((t) => (t.pos === '助動詞' && ['ない', 'ぬ', 'ん'].includes(t.basic_form ?? '')) || (t.pos === '形容詞' && t.basic_form === 'ない')).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The subjects a correction may leave out without changing anything (as kana, at the start of the line): Japanese often drops
+ * them, and a model that drops one has found no mistake (Qwen3 8B dropped 私は from a correct sentence).
+ */
+const OMITTABLE_SUBJECTS = ['わたしは', 'わたくしは', 'ぼくは', 'あたしは', 'おれは'];
+
+/** the correction only leaves out the subject at the start of the line (both as kana, see sayingOf) */
+export function onlyDropsSubject(before: string, after: string): boolean {
+  return OMITTABLE_SUBJECTS.some((s) => before.startsWith(s) && before.slice(s.length) === after);
+}
+
+/**
+ * The tip of a small model's reply (smallModel), made from its `corrected`: the player's line written as correct Japanese (his
+ * Chinese translated). The model writes no tip of its own: its explanations were wrong about half the time, while its corrected
+ * line was right (Qwen3 8B: 8 of 8). So the tip shows the corrected line only:
+ * - his Chinese → 「這句話的日文可以說 <ja>…</ja>」;
+ * - his Japanese, when the correction says it differently (compared by the kana of its words, so a kanji written as kana is no
+ *   change) and is a correction (it adds no more than one would, see addedShare; it does not only drop the subject, see
+ *   onlyDropsSubject; it does not turn the line into its opposite, see negations) → 「這句可以說成 <ja>…</ja>」;
+ * - anything else (no correction, the same sentence, a rewrite of the model's own) → no tip.
+ * A tip the model wrote anyway (a server that does not hold to the schema) is replaced. A reply that is not complete JSON is left
+ * as it is. `said`: the player's words (saidOf).
+ */
+export async function tipFromCorrection(raw: string, said: string): Promise<string> {
+  let j: unknown;
+  try { j = JSON.parse(raw); } catch { return raw; }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return raw;
+  const o = j as Record<string, unknown>;
+  return JSON.stringify({ ...o, tip: await correctionTip(typeof o.corrected === 'string' ? o.corrected : '', said) });
+}
+
+/** the tip of tipFromCorrection: the corrected line, or '' when it teaches nothing */
+async function correctionTip(raw: string, said: string): Promise<string> {
+  const corrected = raw.replace(/<\/?ja>/g, '').trim();
+  if (!said || !KANA.test(corrected)) return '';
+  // the Japanese keeps its own end mark (。！？); the tip adds 。 only after one that has none
+  const line = `<ja>${corrected}</ja>${/[。！？!?]$/.test(corrected) ? '' : '。'}`;
+  if (!KANA.test(said)) return `這句話的日文可以說 ${line}`;
+  const before = await sayingOf(said);
+  const after = await sayingOf(corrected);
+  if (before === after || onlyDropsSubject(before, after)) return '';
+  if (addedShare(before, after) > CORRECTION_MAX_ADDED || (await negations(corrected)) > (await negations(said))) return '';
+  return `這句可以說成 ${line}`;
 }
