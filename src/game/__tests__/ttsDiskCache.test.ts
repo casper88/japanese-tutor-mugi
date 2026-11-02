@@ -3,10 +3,24 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TtsCache, looksLikeMp3, ttsCacheFileName } from '../../../server/ttsCache.ts';
+import { TtsCache as DiskCache, looksLikeMp3, ttsCacheFileName } from '../../../server/ttsCache.ts';
 import { answerTts, cacheKey, sameOriginRequest, type TtsBody } from '../../../server/tts.ts';
 import { UsageStore, usageRoute } from '../../../server/usage.ts';
 import { ttsCacheLine } from '../usageView';
+
+/** the caches the running test opened (TtsCache below) */
+const opened: DiskCache[] = [];
+/**
+ * The real cache, remembered when it is made. A cache writes its files in the background (fetchOnce and answerTts return before
+ * the file is on disk), so afterEach waits for every cache's writes before it removes the folder: a file that lands while the
+ * folder is being removed makes the removal fail (ENOTEMPTY).
+ */
+class TtsCache extends DiskCache {
+  constructor(...args: ConstructorParameters<typeof DiskCache>) {
+    super(...args);
+    opened.push(this);
+  }
+}
 
 let dir: string;
 let cdir: string;
@@ -16,7 +30,8 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(opened.splice(0).map((c) => c.settle()));
   vi.restoreAllMocks();
   rmSync(dir, { recursive: true, force: true });
 });
