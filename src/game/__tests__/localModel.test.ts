@@ -20,7 +20,9 @@ import {
 } from '../../../server/llm/localService.ts';
 import { LOOKUP_SYSTEM_PLAIN, TIP_FIX_SYSTEM_PLAIN, reminderPrompt, systemPrompt } from '../../../server/prompts.ts';
 import { stripReadings } from '../../../server/readings.ts';
-import { CORRECTION_MAX_ADDED, addedShare, fixReplyJson, saidOf, sayingOf, tipFromCorrection } from '../../../server/replyFix.ts';
+import {
+  CORRECTION_MAX_ADDED, addedShare, fixReplyJson, negations, onlyDropsSubject, saidOf, sayingOf, tipFromCorrection,
+} from '../../../server/replyFix.ts';
 import { cleanValue } from '../../../server/envFile.ts';
 import { keysStatus, keyUpdatesFrom } from '../../../server/settingsRoutes.ts';
 import { LOCAL_LLM_URL_DEFAULT, PROVIDERS_MAX, parseProviderList } from '../claudeProtocol';
@@ -149,6 +151,25 @@ describe('a small model writes the player’s line correctly first (corrected)',
     const answered = reply({ corrected: 'ねえ、今夜も寒いの？' });
     expect(await tipFromCorrection(answered, '昨日はとても寒いです')).toBe(answered);
     expect(addedShare('', 'あ')).toBe(1);
+  });
+
+  it('a correction that turns the line into its opposite gives no tip (Qwen3 8B: 先週東京へ行きます → 行きませんでした)', async () => {
+    expect(await negations('先週東京へ行きませんでした')).toBe(1);
+    expect(await negations('先週東京へ行きます')).toBe(0);
+    expect(await negations('お金がない')).toBe(1);
+    expect(await negations('行かない')).toBe(1);
+    const flipped = reply({ corrected: '先週東京へ行きませんでした' });
+    expect(JSON.parse(await tipFromCorrection(flipped, '先週東京へ行きます')).tip).toBe('');
+    // a negative line he wrote wrong is still corrected
+    expect(JSON.parse(await tipFromCorrection(reply({ corrected: '昨日は行きませんでした' }), '昨日は行かないでした')).tip).toBe('這句可以說成 <ja>昨日は行きませんでした</ja>。');
+  });
+
+  it('a correction that only leaves out the subject gives no tip (Qwen3 8B dropped 私は from a correct sentence)', async () => {
+    expect(onlyDropsSubject(await sayingOf('私は昨日友達と映画を見に行きました'), await sayingOf('昨日、友達と映画を見に行きました。'))).toBe(true);
+    const dropped = reply({ corrected: '昨日、友達と映画を見に行きました。' });
+    expect(JSON.parse(await tipFromCorrection(dropped, '私は昨日友達と映画を見に行きました')).tip).toBe('');
+    // dropping the subject while fixing a mistake is still a correction
+    expect(JSON.parse(await tipFromCorrection(reply({ corrected: '日本語が好きです' }), '私は日本語が好きます')).tip).toBe('這句可以說成 <ja>日本語が好きです</ja>。');
   });
 
   it('a correction that ends with its own 。 or ？ gets no second one', async () => {

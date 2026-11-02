@@ -154,12 +154,39 @@ export function addedShare(said: string, corrected: string): number {
 export const CORRECTION_MAX_ADDED = 0.4;
 
 /**
+ * How many negations a line holds: the negative endings (ない, ぬ, the ん of ません) and the adjective ない. A correction never
+ * turns what the player said into its opposite (Qwen3 8B "corrected" 先週東京へ行きます to 行きませんでした twice), so a
+ * correction with more of them than his line is not taken. 0 when the analyser is not available.
+ */
+export async function negations(text: string): Promise<number> {
+  try {
+    const tk = await loadAnalyzer();
+    const tokens = tk.tokenize(text) as { pos?: string; basic_form?: string }[];
+    return tokens.filter((t) => (t.pos === '助動詞' && ['ない', 'ぬ', 'ん'].includes(t.basic_form ?? '')) || (t.pos === '形容詞' && t.basic_form === 'ない')).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * The subjects a correction may leave out without changing anything (as kana, at the start of the line): Japanese often drops
+ * them, and a model that drops one has found no mistake (Qwen3 8B dropped 私は from a correct sentence).
+ */
+const OMITTABLE_SUBJECTS = ['わたしは', 'わたくしは', 'ぼくは', 'あたしは', 'おれは'];
+
+/** the correction only leaves out the subject at the start of the line (both as kana, see sayingOf) */
+export function onlyDropsSubject(before: string, after: string): boolean {
+  return OMITTABLE_SUBJECTS.some((s) => before.startsWith(s) && before.slice(s.length) === after);
+}
+
+/**
  * The tip of a small model's reply (smallModel), made from its `corrected`: the player's line written as correct Japanese (his
  * Chinese translated). The model writes no tip of its own: its explanations were wrong about half the time, while its corrected
  * line was right (Qwen3 8B: 8 of 8). So the tip shows the corrected line only:
  * - his Chinese → 「這句話的日文可以說 <ja>…</ja>」;
  * - his Japanese, when the correction says it differently (compared by the kana of its words, so a kanji written as kana is no
- *   change) and adds no more than a correction would (addedShare) → 「這句可以說成 <ja>…</ja>」;
+ *   change) and is a correction (it adds no more than one would, see addedShare; it does not only drop the subject, see
+ *   onlyDropsSubject; it does not turn the line into its opposite, see negations) → 「這句可以說成 <ja>…</ja>」;
  * - anything else (no correction, the same sentence, a rewrite of the model's own) → no tip.
  * A tip the model wrote anyway (a server that does not hold to the schema) is replaced. A reply that is not complete JSON is left
  * as it is. `said`: the player's words (saidOf).
@@ -181,6 +208,7 @@ async function correctionTip(raw: string, said: string): Promise<string> {
   if (!KANA.test(said)) return `這句話的日文可以說 ${line}`;
   const before = await sayingOf(said);
   const after = await sayingOf(corrected);
-  if (before === after || addedShare(before, after) > CORRECTION_MAX_ADDED) return '';
+  if (before === after || onlyDropsSubject(before, after)) return '';
+  if (addedShare(before, after) > CORRECTION_MAX_ADDED || (await negations(corrected)) > (await negations(said))) return '';
   return `這句可以說成 ${line}`;
 }
