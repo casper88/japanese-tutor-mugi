@@ -26,7 +26,7 @@ import { createChatGpt, type ChatGptService } from './openai/service.ts';
 import { dataDirectory, defaultProtector, openCredentialStore } from './openai/credentials.ts';
 import { handleAuthCallback, handleOpenAiApi } from './openai/routes.ts';
 import { JUDGE_PROMPT, LOOKUP_SYSTEM, LOOKUP_SYSTEM_PLAIN, TIP_FIX_SYSTEM, TIP_FIX_SYSTEM_PLAIN, defaultPersona, reminderPrompt, systemPrompt } from './prompts.ts';
-import { fixReplyJson, isChineseTip, wrapJapanese } from './replyFix.ts';
+import { fixReplyJson, isChineseTip, saidOf, tipFromCorrection, wrapJapanese } from './replyFix.ts';
 import { fillReadings, loadAnalyzer, stripReadings } from './readings.ts';
 import { dailyLimitHit, getUsageStore, type ClaudeUsage, type UsageStore } from './usage.ts';
 import { guardApi, guardOptionsFrom } from './apiGuard.ts';
@@ -441,9 +441,27 @@ export const CHAT_REPLY_SCHEMA = {
 } as const;
 
 /**
+ * Her reply from a small local model (smallModel): `corrected` first, the player's line written as correct Japanese (his Chinese
+ * translated), then her segments and tone, and no tip: the server writes the tip from `corrected` (replyFix.ts
+ * tipFromCorrection), since a small model's own explanations were often wrong. `corrected` is dropped from what is shown and
+ * stored (the canonical reply has segments, tip and tone only).
+ */
+export const CHAT_REPLY_SCHEMA_SMALL = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['corrected', 'segments', 'tone'],
+  properties: {
+    corrected: { type: 'string' },
+    segments: CHAT_REPLY_SCHEMA.properties.segments,
+    tone: CHAT_REPLY_SCHEMA.properties.tone,
+  },
+} as const;
+
+/**
  * The upstream request for a validated body: model, the stable system block with its breakpoint, and the messages from
  * upstreamMessages. No top-level cache_control: the automatic marker would sit on the volatile newest turn.
- * `smallModel`: the provider's (see upstreamMessages).
+ * `smallModel`: the provider's (see upstreamMessages); a small model also gets CHAT_REPLY_SCHEMA_SMALL and the system prompt
+ * that describes its `corrected` field.
  */
 export function chatRequest(body: ChatBody, model: string, opts: { smallModel?: boolean } = {}): LlmChatRequest {
   return {
@@ -452,13 +470,13 @@ export function chatRequest(body: ChatBody, model: string, opts: { smallModel?: 
     // the schema's name for ChatGPT's strict json_schema (the Anthropic provider does not send it)
     schemaName: 'mugi_reply',
     // the reply is a JSON object of CHAT_REPLY_SCHEMA (Structured Outputs); effort low: fast, chatty replies
-    output_config: { effort: 'low', format: { type: 'json_schema', schema: CHAT_REPLY_SCHEMA } },
+    output_config: { effort: 'low', format: { type: 'json_schema', schema: opts.smallModel ? CHAT_REPLY_SCHEMA_SMALL : CHAT_REPLY_SCHEMA } },
     betas: [FALLBACK_BETA],
     // retried on another model if a safety classifier declines. If the API ever rejects a request that has both this
     // fallbacks chain and an output format (structured outputs), delete this line and the beta above: the schema is what
     // keeps the reply's shape, the fallback only adds a retry.
     fallbacks: 'default',
-    system: [{ type: 'text', text: systemPrompt(body.role, body.persona, body.name), cache_control: { type: 'ephemeral' } }],
+    system: [{ type: 'text', text: systemPrompt(body.role, body.persona, body.name, opts), cache_control: { type: 'ephemeral' } }],
     messages: upstreamMessages(body.messages, opts),
   };
 }
@@ -734,6 +752,8 @@ export type ReplyIo = {
  * reply (or ended it with an error), or null when the player left.
  */
 export async function streamReply(services: Service[], body: ChatBody, io: ReplyIo): Promise<Service | null> {
+  // the player's own words in the newest turn (a small model's correction is compared with them)
+  const said = saidOf(body.messages[body.messages.length - 1].content);
   for (let i = 0; i < services.length; i++) {
     const svc = services[i];
     const last = i === services.length - 1;
@@ -754,8 +774,10 @@ export async function streamReply(services: Service[], body: ChatBody, io: Reply
       const final: LlmResult = await stream.done;
       if (svc.spend) io.spendDone(svc, final);
       recorded = true;
-      // a local model's own readings are removed first, so every reading comes from the analyser (fixReplyJson)
-      await io.finish(svc, svc.provider.smallModel ? { ...final, text: stripReadings(final.text) } : final);
+      // a small model's own readings are removed first, so every reading comes from the analyser (fixReplyJson), and its tip is
+      // made from its correction of the player's line
+      const text = svc.provider.smallModel ? await tipFromCorrection(stripReadings(final.text), said) : final.text;
+      await io.finish(svc, { ...final, text });
       return svc;
     } catch (e) {
       // a stream that ended early (the player left, the upstream failed or hit the time limit) still spends what it used

@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  CHAT_REPLY_SCHEMA, LOOKUP_SCHEMA, chatRequest, lookupAnswerWith, parseChatBody, rewriteTipWith, servicesFor, streamReply, type ReplyIo,
+  CHAT_REPLY_SCHEMA, CHAT_REPLY_SCHEMA_SMALL, LOOKUP_SCHEMA, chatRequest, lookupAnswerWith, parseChatBody, rewriteTipWith, servicesFor,
+  streamReply, type ReplyIo,
 } from '../../../server/claudeChat.ts';
 import { fallbackWorthy, type Service } from '../../../server/aiChain.ts';
 import {
@@ -19,6 +20,9 @@ import {
 } from '../../../server/llm/localService.ts';
 import { LOOKUP_SYSTEM_PLAIN, TIP_FIX_SYSTEM_PLAIN, reminderPrompt, systemPrompt } from '../../../server/prompts.ts';
 import { stripReadings } from '../../../server/readings.ts';
+import {
+  CORRECTION_MAX_ADDED, addedShare, fixReplyJson, negations, onlyDropsSubject, saidOf, sayingOf, tipFromCorrection,
+} from '../../../server/replyFix.ts';
 import { cleanValue } from '../../../server/envFile.ts';
 import { keysStatus, keyUpdatesFrom } from '../../../server/settingsRoutes.ts';
 import { LOCAL_LLM_URL_DEFAULT, PROVIDERS_MAX, parseProviderList } from '../claudeProtocol';
@@ -72,9 +76,9 @@ describe('request conversion (Anthropic shape → Chat Completions)', () => {
     expect(body.max_tokens).toBe(2000);
     expect(body.stream).toBe(true);
     const messages = body.messages as { role: string; content: string }[];
-    expect(messages[0]).toEqual({ role: 'system', content: systemPrompt('Mugi') });
+    expect(messages[0]).toEqual({ role: 'system', content: systemPrompt('Mugi', undefined, undefined, { smallModel: true }) });
     expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
-    expect(body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'mugi_reply', strict: true, schema: CHAT_REPLY_SCHEMA } });
+    expect(body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'mugi_reply', strict: true, schema: CHAT_REPLY_SCHEMA_SMALL } });
     const text = JSON.stringify(body);
     expect(text).not.toContain('cache_control');
     expect(text).not.toContain('betas');
@@ -95,6 +99,123 @@ describe('request conversion (Anthropic shape → Chat Completions)', () => {
     const body = chatCompletionsBody({ model: 'm', max_tokens: 10, system: 'S', messages: [{ role: 'user', content: 'Q' }] });
     expect(body).not.toHaveProperty('response_format');
     expect(body.messages).toEqual([{ role: 'system', content: 'S' }, { role: 'user', content: 'Q' }]);
+  });
+});
+
+describe('a small model writes the player’s line correctly first (corrected)', () => {
+  it('its schema is corrected first, then segments and tone, no tip; Claude keeps its schema and prompt', () => {
+    expect(Object.keys(CHAT_REPLY_SCHEMA_SMALL.properties)).toEqual(['corrected', 'segments', 'tone']);
+    expect([...CHAT_REPLY_SCHEMA_SMALL.required]).toEqual(['corrected', 'segments', 'tone']);
+    expect(CHAT_REPLY_SCHEMA_SMALL.additionalProperties).toBe(false);
+    const small = systemPrompt('Mugi', undefined, undefined, { smallModel: true });
+    expect(small).toContain('corrected');
+    expect(small).not.toContain('tip');
+    expect(small.length).toBeLessThan(systemPrompt('Mugi').length);
+    // the player's own name and personality reach the small prompt too
+    const own = systemPrompt('Mugi', '說話用大阪腔', '結衣', { smallModel: true });
+    expect(own).toContain('「結衣」');
+    expect(own).toContain('個性：說話用大阪腔');
+    expect(systemPrompt('Mugi')).not.toContain('corrected');
+    const claude = chatRequest(sample, 'claude-haiku-5-5');
+    expect(claude.output_config?.format?.schema).toBe(CHAT_REPLY_SCHEMA);
+    expect(JSON.stringify(claude.system)).not.toContain('corrected');
+    expect(reminderPrompt({ smallModel: true })).toContain('corrected');
+    expect(reminderPrompt({ smallModel: true })).not.toContain('tip');
+  });
+
+  it('saidOf leaves the player’s words only', () => {
+    expect(saidOf('［情境：晚上 9 點］［模式：日語老師］昨日は寒いです')).toBe('昨日は寒いです');
+    expect(saidOf('你好')).toBe('你好');
+  });
+
+  it('sayingOf compares by the kana of the words, without punctuation', async () => {
+    expect(await sayingOf('昨日は寒かったです。')).toBe(await sayingOf('きのうは さむかったです'));
+    expect(await sayingOf('昨日は寒いです')).not.toBe(await sayingOf('昨日は寒かったです'));
+  });
+
+  const reply = (o: Record<string, unknown>) => JSON.stringify({ segments: [{ lang: 'ja', text: 'そうだね', gloss: '對啊' }], tip: '', tone: 'happy', ...o });
+
+  it('an empty tip is written from a correction that changed his Japanese', async () => {
+    const out = JSON.parse(await tipFromCorrection(reply({ corrected: '昨日はとても寒かったです' }), '昨日はとても寒いです'));
+    expect(out.tip).toBe('這句可以說成 <ja>昨日はとても寒かったです</ja>。');
+  });
+
+  it('a correction that adds a phrase of its own is not a correction: no tip (the cases measured on Qwen3 4B)', async () => {
+    const share = async (a: string, b: string) => addedShare(await sayingOf(a), await sayingOf(b));
+    // real corrections, kept
+    for (const [a, b] of [['このラーメンはおいしいでした', 'このラーメンはおいしかったです'], ['昨日はとても寒いです', '昨日はとても寒かったです'], ['私は学生だです', '私は学生です']]) {
+      expect(await share(a, b)).toBeLessThanOrEqual(CORRECTION_MAX_ADDED);
+    }
+    // the model answered in corrected instead
+    expect(await share('日本語を勉強するたいです', '日本語を勉強するって、とても楽しいです！')).toBeGreaterThan(CORRECTION_MAX_ADDED);
+    const answered = reply({ corrected: 'ねえ、今夜も寒いの？' });
+    expect(await tipFromCorrection(answered, '昨日はとても寒いです')).toBe(answered);
+    expect(addedShare('', 'あ')).toBe(1);
+  });
+
+  it('a correction that turns the line into its opposite gives no tip (Qwen3 8B: 先週東京へ行きます → 行きませんでした)', async () => {
+    expect(await negations('先週東京へ行きませんでした')).toBe(1);
+    expect(await negations('先週東京へ行きます')).toBe(0);
+    expect(await negations('お金がない')).toBe(1);
+    expect(await negations('行かない')).toBe(1);
+    const flipped = reply({ corrected: '先週東京へ行きませんでした' });
+    expect(JSON.parse(await tipFromCorrection(flipped, '先週東京へ行きます')).tip).toBe('');
+    // a negative line he wrote wrong is still corrected
+    expect(JSON.parse(await tipFromCorrection(reply({ corrected: '昨日は行きませんでした' }), '昨日は行かないでした')).tip).toBe('這句可以說成 <ja>昨日は行きませんでした</ja>。');
+  });
+
+  it('a correction that only leaves out the subject gives no tip (Qwen3 8B dropped 私は from a correct sentence)', async () => {
+    expect(onlyDropsSubject(await sayingOf('私は昨日友達と映画を見に行きました'), await sayingOf('昨日、友達と映画を見に行きました。'))).toBe(true);
+    const dropped = reply({ corrected: '昨日、友達と映画を見に行きました。' });
+    expect(JSON.parse(await tipFromCorrection(dropped, '私は昨日友達と映画を見に行きました')).tip).toBe('');
+    // dropping the subject while fixing a mistake is still a correction
+    expect(JSON.parse(await tipFromCorrection(reply({ corrected: '日本語が好きです' }), '私は日本語が好きます')).tip).toBe('這句可以說成 <ja>日本語が好きです</ja>。');
+  });
+
+  it('a correction that ends with its own 。 or ？ gets no second one', async () => {
+    const out = JSON.parse(await tipFromCorrection(reply({ corrected: '私は学生です。' }), '私は学生だです'));
+    expect(out.tip).toBe('這句可以說成 <ja>私は学生です。</ja>');
+    const q = JSON.parse(await tipFromCorrection(reply({ corrected: '東京に行きますか？' }), '你要去東京嗎'));
+    expect(q.tip).toBe('這句話的日文可以說 <ja>東京に行きますか？</ja>');
+  });
+
+  it('a tip the model wrote anyway is replaced by the corrected line (Qwen3 8B: right correction, wrong explanation)', async () => {
+    const off = reply({ corrected: '昨日、友達に会いました', tip: '把「に」改成「と」，因為「会う」是及物動詞' });
+    expect(JSON.parse(await tipFromCorrection(off, '昨日友達に会うました')).tip).toBe('這句可以說成 <ja>昨日、友達に会いました</ja>。');
+    const zh = reply({ corrected: 'このラーメン屋はとてもおいしいです。', tip: '「行く」要改成「行きます」，因為是敬語' });
+    expect(JSON.parse(await tipFromCorrection(zh, '這家拉麵很好吃')).tip).toBe('這句話的日文可以說 <ja>このラーメン屋はとてもおいしいです。</ja>');
+    // a sentence the correction leaves the same gets no tip, whatever the model wrote
+    expect(JSON.parse(await tipFromCorrection(reply({ corrected: '週末は家で休みました', tip: '要改成…' }), '週末は家で休みました')).tip).toBe('');
+  });
+
+  it('an empty tip is written from the translation of his Chinese', async () => {
+    const out = JSON.parse(await tipFromCorrection(reply({ corrected: '明日東京に行きます' }), '我明天要去東京'));
+    expect(out.tip).toBe('這句話的日文可以說 <ja>明日東京に行きます</ja>。');
+  });
+
+  it('the reply stays as it is: the same line (kanji as kana, punctuation), a tip already written, no correction, cut JSON', async () => {
+    const same = reply({ corrected: '週末は家でゆっくり休みました。' });
+    expect(await tipFromCorrection(same, '週末は家でゆっくりやすみました')).toBe(same);
+    const none = reply({ corrected: '' });
+    expect(await tipFromCorrection(none, '昨日は寒いです')).toBe(none);
+    const chinese = reply({ corrected: '昨天很冷' });
+    expect(await tipFromCorrection(chinese, '昨日は寒いです')).toBe(chinese);
+    expect(await tipFromCorrection('{"corrected":"x', '昨日は寒いです')).toBe('{"corrected":"x');
+  });
+
+  it('through the chat: the correction becomes the tip, gets its readings, and is not stored', async () => {
+    const body = parseChatBody(JSON.stringify({ messages: [{ role: 'user', content: '［模式：日語老師］私は日本語が好きます' }], role: 'Mugi', mode: 'teacher', context: {} }));
+    const answer = '{"corrected":"私[わたし]は日本語が好きです","segments":[{"lang":"ja","text":"いいね！","gloss":"很好！"}],"tip":"","tone":"happy"}';
+    const { transport } = transportWith(events([delta(answer), finish()]));
+    const svc: Service = { id: 'local', model: 'm', provider: localProvider(transport), spend: false };
+    let shown = '';
+    await streamReply([svc], body, {
+      send: () => {}, gone: () => false, track: () => {}, spendEnded: () => {}, spendDone: () => {},
+      finish: async (_s, final) => { shown = (await fixReplyJson(final.text)).json; }, failed: () => {},
+    });
+    const j = JSON.parse(shown);
+    expect(j.tip).toBe('這句可以說成 <ja>私[わたし]は日本語[にほんご]が好[す]きです</ja>。');
+    expect(j).not.toHaveProperty('corrected');
   });
 });
 

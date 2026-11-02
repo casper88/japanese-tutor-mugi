@@ -94,6 +94,7 @@ Claude、ChatGPT 與本地模型至少要有一個（設定多個時，依「AI 
 - **ChatGPT（至少選一）**：用自己的 ChatGPT 帳號登入（OpenAI 官方 OAuth），不需要 OpenAI API 金鑰，用量算在你的 ChatGPT 方案額度，不計入每日預算上限。在電腦上開 App，到 ⚙️ 設定的「AI 服務」按「用 ChatGPT 登入」；登入資料存在電腦的使用者資料夾（`~/.mugi-tutor`，可用環境變數 `MUGI_DATA_DIR` 改位置），不會進專案資料夾，也不會傳到手機。Windows 上會加密（金鑰由 Windows 保護）；其他系統是不加密的檔案，權限只開給你的帳號。登入後可以選 ChatGPT 的模型，並把 ChatGPT 排到 Claude 前面或後面。依 OpenAI 條款，請勿分享帳號。
 - **本地模型（至少選一）**：在電腦上跑免費的開源模型，不需要金鑰、不計入每日預算上限，對話也不會離開你的電腦（或家裡的網路）。支援提供 OpenAI 相容 API 的伺服器，例如 [Ollama](https://ollama.com/)、[LM Studio](https://lmstudio.ai/) 或 llama.cpp 的 `llama-server`。用 Ollama 的話：安裝後下載一個中日文都好的模型（例如 `ollama pull qwen3:8b`），在 ⚙️ 設定的「AI 服務」打開「本地模型」即可；預設連 `http://127.0.0.1:11434/v1`，用清單裡第一個模型。用其他伺服器或指定模型時，在電腦上的設定填「本地模型網址」與「模型名稱」（寫進 `.env.local` 的 `LOCAL_LLM_URL`、`LOCAL_LLM_MODEL`；伺服器需要金鑰時另外設定 `LOCAL_LLM_API_KEY`）。
   - 漢字讀音全部由伺服器的 kuromoji 標註：模型不用寫，寫了也會先被拿掉（小模型常標錯）。
+  - 小提醒只顯示正確說法：小模型會先把你的句子改寫成正確的日文，程式比對後才給小提醒，不附模型自己的解釋（小模型的解釋常常是錯的）。實測 Qwen3 8B，8 句常見錯誤抓到 7 句，詳見 [0011](docs/decisions/0011-small-model-corrections.md)。
   - 系統提示加上對話紀錄最多約 8K token。Ollama 的預設長度上限可能比這短，請調到 8192 以上（例如啟動 Ollama 前設定環境變數 `OLLAMA_CONTEXT_LENGTH=8192`），不然前面的規則會被截掉。
   - 會「思考」的模型（例如 Qwen3）每句都會慢一些，可以改用不思考的模型，或在伺服器上關掉思考。
   - 建議用 8B 以上的模型並有顯示卡。實測 4-bit 版本、長度上限 8192 時，8B 約佔 6.5 GB 顯示記憶體（建議 8 GB 的卡），4B 約佔 4 GB（6 GB 的卡就夠）；顯示記憶體不夠時會改用 CPU 跑，會慢很多。小模型的糾錯和解說會比 Claude 弱。
