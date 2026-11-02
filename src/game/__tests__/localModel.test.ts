@@ -20,7 +20,7 @@ import {
 } from '../../../server/llm/localService.ts';
 import { LOOKUP_SYSTEM_PLAIN, TIP_FIX_SYSTEM_PLAIN, reminderPrompt, systemPrompt } from '../../../server/prompts.ts';
 import { stripReadings } from '../../../server/readings.ts';
-import { fixReplyJson, saidOf, sayingOf, tipFromCorrection } from '../../../server/replyFix.ts';
+import { CORRECTION_MAX_ADDED, addedShare, fixReplyJson, saidOf, sayingOf, tipFromCorrection } from '../../../server/replyFix.ts';
 import { cleanValue } from '../../../server/envFile.ts';
 import { keysStatus, keyUpdatesFrom } from '../../../server/settingsRoutes.ts';
 import { LOCAL_LLM_URL_DEFAULT, PROVIDERS_MAX, parseProviderList } from '../claudeProtocol';
@@ -130,6 +130,19 @@ describe('a small model writes the player’s line correctly first (corrected)',
   it('an empty tip is written from a correction that changed his Japanese', async () => {
     const out = JSON.parse(await tipFromCorrection(reply({ corrected: '昨日はとても寒かったです' }), '昨日はとても寒いです'));
     expect(out.tip).toBe('這句可以說成 <ja>昨日はとても寒かったです</ja>。');
+  });
+
+  it('a correction that adds a phrase of its own is not a correction: no tip (the cases measured on Qwen3 4B)', async () => {
+    const share = async (a: string, b: string) => addedShare(await sayingOf(a), await sayingOf(b));
+    // real corrections, kept
+    for (const [a, b] of [['このラーメンはおいしいでした', 'このラーメンはおいしかったです'], ['昨日はとても寒いです', '昨日はとても寒かったです'], ['私は学生だです', '私は学生です']]) {
+      expect(await share(a, b)).toBeLessThanOrEqual(CORRECTION_MAX_ADDED);
+    }
+    // the model answered in corrected instead
+    expect(await share('日本語を勉強するたいです', '日本語を勉強するって、とても楽しいです！')).toBeGreaterThan(CORRECTION_MAX_ADDED);
+    const answered = reply({ corrected: 'ねえ、今夜も寒いの？' });
+    expect(await tipFromCorrection(answered, '昨日はとても寒いです')).toBe(answered);
+    expect(addedShare('', 'あ')).toBe(1);
   });
 
   it('a correction that ends with its own 。 or ？ gets no second one', async () => {

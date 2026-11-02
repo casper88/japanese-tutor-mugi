@@ -126,13 +126,41 @@ export async function sayingOf(text: string): Promise<string> {
   }
 }
 
+/** the length of the longest run of characters that `a` and `b` share in order (not necessarily side by side) */
+function commonLength(a: string, b: string): number {
+  const x = [...a];
+  const y = [...b];
+  let prev = new Array<number>(y.length + 1).fill(0);
+  for (let i = 1; i <= x.length; i++) {
+    const cur = [0];
+    for (let j = 1; j <= y.length; j++) cur[j] = x[i - 1] === y[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+    prev = cur;
+  }
+  return prev[y.length];
+}
+
+/**
+ * How much a correction adds to the line it corrects, as a share of the line (compared as kana, see sayingOf). A real
+ * correction changes an ending or a particle; a small model that answers in `corrected` instead adds a phrase of its own.
+ * Measured on Qwen3 4B: real corrections added at most 0.29 (おいしいでした → おいしかったです); rewrites that were not
+ * corrections added 0.44 and 0.50.
+ */
+export function addedShare(said: string, corrected: string): number {
+  const n = [...said].length;
+  return n ? ([...corrected].length - commonLength(said, corrected)) / n : 1;
+}
+
+/** above this added share, a correction is taken for a rewrite of the model's own and gives no tip */
+export const CORRECTION_MAX_ADDED = 0.4;
+
 /**
  * A small model's reply (smallModel) starts with `corrected`: the player's line written as correct Japanese (his Chinese
  * translated). Writing that is easier for a small model than spotting a mistake while it chats, and it shows what the model
  * found even when it then leaves the tip empty. So when the tip is empty, it is written from `corrected`: his Chinese →
  * 「這句話的日文可以說 <ja>…</ja>。」; his Japanese, when the correction says it differently (compared by the kana of its words,
  * so a kanji written as kana is no change) → 「這句可以說成 <ja>…</ja>。」. A tip the model wrote, no correction, the same
- * sentence, or a reply that is not complete JSON leaves the reply as it is. `said`: the player's words (saidOf).
+ * sentence, a correction that adds too much to be one (addedShare), or a reply that is not complete JSON leaves the reply as it
+ * is. `said`: the player's words (saidOf).
  */
 export async function tipFromCorrection(raw: string, said: string): Promise<string> {
   let j: unknown;
@@ -145,6 +173,8 @@ export async function tipFromCorrection(raw: string, said: string): Promise<stri
   // the Japanese keeps its own end mark (。！？); the tip adds 。 only after one that has none
   const line = `<ja>${corrected}</ja>${/[。！？!?]$/.test(corrected) ? '' : '。'}`;
   if (!KANA.test(said)) return JSON.stringify({ ...o, tip: `這句話的日文可以說 ${line}` });
-  if ((await sayingOf(said)) === (await sayingOf(corrected))) return raw;
+  const before = await sayingOf(said);
+  const after = await sayingOf(corrected);
+  if (before === after || addedShare(before, after) > CORRECTION_MAX_ADDED) return raw;
   return JSON.stringify({ ...o, tip: `這句可以說成 ${line}` });
 }
