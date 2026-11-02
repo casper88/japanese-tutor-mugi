@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  CHAT_REPLY_SCHEMA, LOOKUP_SCHEMA, chatRequest, lookupAnswerWith, parseChatBody, rewriteTipWith, servicesFor, streamReply, type ReplyIo,
+  CHAT_REPLY_SCHEMA, CHAT_REPLY_SCHEMA_SMALL, LOOKUP_SCHEMA, chatRequest, lookupAnswerWith, parseChatBody, rewriteTipWith, servicesFor,
+  streamReply, type ReplyIo,
 } from '../../../server/claudeChat.ts';
 import { fallbackWorthy, type Service } from '../../../server/aiChain.ts';
 import {
@@ -19,6 +20,7 @@ import {
 } from '../../../server/llm/localService.ts';
 import { LOOKUP_SYSTEM_PLAIN, TIP_FIX_SYSTEM_PLAIN, reminderPrompt, systemPrompt } from '../../../server/prompts.ts';
 import { stripReadings } from '../../../server/readings.ts';
+import { fixReplyJson, saidOf, sayingOf, tipFromCorrection } from '../../../server/replyFix.ts';
 import { cleanValue } from '../../../server/envFile.ts';
 import { keysStatus, keyUpdatesFrom } from '../../../server/settingsRoutes.ts';
 import { LOCAL_LLM_URL_DEFAULT, PROVIDERS_MAX, parseProviderList } from '../claudeProtocol';
@@ -72,9 +74,9 @@ describe('request conversion (Anthropic shape → Chat Completions)', () => {
     expect(body.max_tokens).toBe(2000);
     expect(body.stream).toBe(true);
     const messages = body.messages as { role: string; content: string }[];
-    expect(messages[0]).toEqual({ role: 'system', content: systemPrompt('Mugi') });
+    expect(messages[0]).toEqual({ role: 'system', content: systemPrompt('Mugi', undefined, undefined, { smallModel: true }) });
     expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
-    expect(body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'mugi_reply', strict: true, schema: CHAT_REPLY_SCHEMA } });
+    expect(body.response_format).toEqual({ type: 'json_schema', json_schema: { name: 'mugi_reply', strict: true, schema: CHAT_REPLY_SCHEMA_SMALL } });
     const text = JSON.stringify(body);
     expect(text).not.toContain('cache_control');
     expect(text).not.toContain('betas');
@@ -95,6 +97,71 @@ describe('request conversion (Anthropic shape → Chat Completions)', () => {
     const body = chatCompletionsBody({ model: 'm', max_tokens: 10, system: 'S', messages: [{ role: 'user', content: 'Q' }] });
     expect(body).not.toHaveProperty('response_format');
     expect(body.messages).toEqual([{ role: 'system', content: 'S' }, { role: 'user', content: 'Q' }]);
+  });
+});
+
+describe('a small model writes the player’s line correctly first (corrected)', () => {
+  it('its schema has corrected first, every field required and no other; Claude keeps the three-field schema and prompt', () => {
+    expect(Object.keys(CHAT_REPLY_SCHEMA_SMALL.properties)).toEqual(['corrected', 'segments', 'tip', 'tone']);
+    expect([...CHAT_REPLY_SCHEMA_SMALL.required]).toEqual(['corrected', 'segments', 'tip', 'tone']);
+    expect(CHAT_REPLY_SCHEMA_SMALL.additionalProperties).toBe(false);
+    const small = systemPrompt('Mugi', undefined, undefined, { smallModel: true });
+    expect(small).toContain('四個欄位');
+    expect(small).toContain('corrected');
+    expect(systemPrompt('Mugi')).not.toContain('corrected');
+    const claude = chatRequest(sample, 'claude-haiku-5-5');
+    expect(claude.output_config?.format?.schema).toBe(CHAT_REPLY_SCHEMA);
+    expect(JSON.stringify(claude.system)).not.toContain('corrected');
+    expect(reminderPrompt({ smallModel: true })).toContain('corrected');
+  });
+
+  it('saidOf leaves the player’s words only', () => {
+    expect(saidOf('［情境：晚上 9 點］［模式：日語老師］昨日は寒いです')).toBe('昨日は寒いです');
+    expect(saidOf('你好')).toBe('你好');
+  });
+
+  it('sayingOf compares by the kana of the words, without punctuation', async () => {
+    expect(await sayingOf('昨日は寒かったです。')).toBe(await sayingOf('きのうは さむかったです'));
+    expect(await sayingOf('昨日は寒いです')).not.toBe(await sayingOf('昨日は寒かったです'));
+  });
+
+  const reply = (o: Record<string, unknown>) => JSON.stringify({ segments: [{ lang: 'ja', text: 'そうだね', gloss: '對啊' }], tip: '', tone: 'happy', ...o });
+
+  it('an empty tip is written from a correction that changed his Japanese', async () => {
+    const out = JSON.parse(await tipFromCorrection(reply({ corrected: '昨日はとても寒かったです' }), '昨日はとても寒いです'));
+    expect(out.tip).toBe('這句可以說成 <ja>昨日はとても寒かったです</ja>。');
+  });
+
+  it('an empty tip is written from the translation of his Chinese', async () => {
+    const out = JSON.parse(await tipFromCorrection(reply({ corrected: '明日東京に行きます' }), '我明天要去東京'));
+    expect(out.tip).toBe('這句話的日文可以說 <ja>明日東京に行きます</ja>。');
+  });
+
+  it('the reply stays as it is: the same line (kanji as kana, punctuation), a tip already written, no correction, cut JSON', async () => {
+    const same = reply({ corrected: '週末は家でゆっくり休みました。' });
+    expect(await tipFromCorrection(same, '週末は家でゆっくりやすみました')).toBe(same);
+    const written = reply({ corrected: '昨日は寒かったです', tip: '要用過去式 <ja>寒かった</ja>。' });
+    expect(await tipFromCorrection(written, '昨日は寒いです')).toBe(written);
+    const none = reply({ corrected: '' });
+    expect(await tipFromCorrection(none, '昨日は寒いです')).toBe(none);
+    const chinese = reply({ corrected: '昨天很冷' });
+    expect(await tipFromCorrection(chinese, '昨日は寒いです')).toBe(chinese);
+    expect(await tipFromCorrection('{"corrected":"x', '昨日は寒いです')).toBe('{"corrected":"x');
+  });
+
+  it('through the chat: the correction becomes the tip, gets its readings, and is not stored', async () => {
+    const body = parseChatBody(JSON.stringify({ messages: [{ role: 'user', content: '［模式：日語老師］私は日本語が好きます' }], role: 'Mugi', mode: 'teacher', context: {} }));
+    const answer = '{"corrected":"私[わたし]は日本語が好きです","segments":[{"lang":"ja","text":"いいね！","gloss":"很好！"}],"tip":"","tone":"happy"}';
+    const { transport } = transportWith(events([delta(answer), finish()]));
+    const svc: Service = { id: 'local', model: 'm', provider: localProvider(transport), spend: false };
+    let shown = '';
+    await streamReply([svc], body, {
+      send: () => {}, gone: () => false, track: () => {}, spendEnded: () => {}, spendDone: () => {},
+      finish: async (_s, final) => { shown = (await fixReplyJson(final.text)).json; }, failed: () => {},
+    });
+    const j = JSON.parse(shown);
+    expect(j.tip).toBe('這句可以說成 <ja>私[わたし]は日本語[にほんご]が好[す]きです</ja>。');
+    expect(j).not.toHaveProperty('corrected');
   });
 });
 

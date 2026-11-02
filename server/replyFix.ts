@@ -8,7 +8,7 @@
 //      canonical form, so what is stored and sent back to Claude is always a complete, valid JSON object.
 import { canonicalReplyJson, parsePartialJson, readReplyValue, toSegments } from '../src/game/replyJson.ts';
 import type { ChatSegment } from '../src/game/claudeProtocol.ts';
-import { fillReadings } from './readings.ts';
+import { fillReadings, loadAnalyzer, toHira } from './readings.ts';
 
 const JA = /<ja>([\s\S]*?)<\/ja>/g;
 const KANA = /[\u3040-\u30ff\uff66-\uff9d]/;
@@ -102,4 +102,47 @@ export async function fixReplyJson(raw: string, opts: FixOptions = {}): Promise<
   if (wrapped !== written) log(`[tip] Japanese in the tip wrapped in <ja>: ${written.slice(0, 60)}`);
   const tip = wrapped ? await fillReadings(wrapped, log) : '';
   return { json: canonicalReplyJson({ segments, tip, tone: fields.tone }), tipRewrite };
+}
+
+/** the player's own words in his turn: the ［情境］［模式］ marks in front (claudeProtocol.userTurn) removed */
+export function saidOf(turn: string): string {
+  return turn.replace(/^(?:［[^］]*］)+/, '').trim();
+}
+
+/** punctuation and spaces, which never make a sentence wrong */
+const NOT_WORDS = /[\s、。，,．.！!？?「」『』（）()…〜~・]/g;
+
+/**
+ * A line as it is compared: punctuation and spaces removed, then every word as its kana (so 寒かった and さむかった are the same
+ * line). Without the analyser, the text without punctuation.
+ */
+export async function sayingOf(text: string): Promise<string> {
+  const bare = text.replace(NOT_WORDS, '');
+  try {
+    const tk = await loadAnalyzer();
+    return tk.tokenize(bare).map((t) => toHira(t.reading && t.reading !== '*' ? t.reading : t.surface_form)).join('');
+  } catch {
+    return bare;
+  }
+}
+
+/**
+ * A small model's reply (smallModel) starts with `corrected`: the player's line written as correct Japanese (his Chinese
+ * translated). Writing that is easier for a small model than spotting a mistake while it chats, and it shows what the model
+ * found even when it then leaves the tip empty. So when the tip is empty, it is written from `corrected`: his Chinese →
+ * 「這句話的日文可以說 <ja>…</ja>。」; his Japanese, when the correction says it differently (compared by the kana of its words,
+ * so a kanji written as kana is no change) → 「這句可以說成 <ja>…</ja>。」. A tip the model wrote, no correction, the same
+ * sentence, or a reply that is not complete JSON leaves the reply as it is. `said`: the player's words (saidOf).
+ */
+export async function tipFromCorrection(raw: string, said: string): Promise<string> {
+  let j: unknown;
+  try { j = JSON.parse(raw); } catch { return raw; }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return raw;
+  const o = j as Record<string, unknown>;
+  const corrected = typeof o.corrected === 'string' ? o.corrected.replace(/<\/?ja>/g, '').trim() : '';
+  const tip = typeof o.tip === 'string' ? o.tip.trim() : '';
+  if (tip || !said || !KANA.test(corrected)) return raw;
+  if (!KANA.test(said)) return JSON.stringify({ ...o, tip: `這句話的日文可以說 <ja>${corrected}</ja>。` });
+  if ((await sayingOf(said)) === (await sayingOf(corrected))) return raw;
+  return JSON.stringify({ ...o, tip: `這句可以說成 <ja>${corrected}</ja>。` });
 }

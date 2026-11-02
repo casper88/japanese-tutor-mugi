@@ -38,9 +38,9 @@ const TEACHER_REMINDER = `格式細節（每則回覆都要遵守）：
  * (upstreamMessages), so what the player said is the last thing the model reads.
  */
 const TEACHER_REMINDER_PLAIN = `回覆規則：
-- segments 要直接回應他下面這句話的內容，像朋友聊天一樣接話，最多兩句日文。
-- 他說中文時：tip 一定要寫，教他這句話的日文怎麼說。
-- 他說日文時：先檢查助詞、時態、動詞變化和用詞。有錯：tip 一定要寫，用一句繁體中文指出最重要的一個錯並給正確說法；完全沒錯：tip 給 ""。
+- 先寫 corrected：把他下面這句話（不含［］裡的標記）寫成正確、自然的日文。他說中文：翻成日文。他說日文：逐一檢查助詞、時態、動詞和形容詞的變化、用詞，把錯的地方改掉；完全沒錯就照抄。
+- segments 要直接回應他這句話的內容，像朋友聊天一樣接話，最多兩句日文。
+- tip：corrected 和他說的日文不一樣時，tip 一定要寫，用一句繁體中文說明改了哪裡、為什麼。他說中文時，tip 教他 corrected 這句日文。完全沒錯：tip 給 ""。
 - gloss 和 tip 一律用繁體中文（不要用簡體字）；tip 裡的日文放在 <ja>…</ja> 裡。text 只放日文。
 - 漢字後面不要加方括號或讀音，讀音由系統自動加上。`;
 
@@ -80,13 +80,31 @@ export function defaultPersona(role: ChatRoleId): string {
  * `persona`: the player's own personality text. It replaces only the 「個性」 text; the rules and the reply format after it
  * stay as they are. Without a name and a persona the prompt is the default one, byte for byte.
  */
-export function systemPrompt(role: ChatRoleId, persona?: string, name?: string): string {
+export function systemPrompt(role: ChatRoleId, persona?: string, name?: string, opts: { smallModel?: boolean } = {}): string {
   const p = PERSONA[role];
   const traits = persona ?? p.traits;
-  return `你是「${name ?? p.name}」，一位住在使用者身邊、專門教他日語的家教。你正在和使用者一對一練習日語。
+  const prompt = `你是「${name ?? p.name}」，一位住在使用者身邊、專門教他日語的家教。你正在和使用者一對一練習日語。
 個性：${traits}${persona === undefined ? '' : '\n'}稱呼對方為「你」。
 ${TEACHER_BASE}
 ${TUTOR_OUTPUT_RULES}`;
+  return opts.smallModel ? smallModelFormat(prompt) : prompt;
+}
+
+/**
+ * The reply format of a small model (smallModel): a fourth field, corrected, comes first. Writing his line out correctly is
+ * a task a small model does far better than spotting a mistake in passing, and the server writes the tip from it when the
+ * model leaves the tip empty (server/replyFix.ts tipFromCorrection).
+ */
+function smallModelFormat(prompt: string): string {
+  return variantOf(
+    variantOf(
+      prompt,
+      '- 你的回覆是一個 JSON 物件，三個欄位：\n',
+      '- 你的回覆是一個 JSON 物件，四個欄位：\n  · corrected：他剛說的那句話的正確日文（他說中文就翻成日文；他說日文就改掉錯誤，沒錯就照抄）。只給系統看，不會顯示。\n',
+    ),
+    '只有 segments、tip、tone 三個欄位',
+    '只有 corrected、segments、tip、tone 四個欄位',
+  );
 }
 
 /**
