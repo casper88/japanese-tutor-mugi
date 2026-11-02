@@ -69,7 +69,7 @@ export function localTransport(cfg: LocalConfig & { url: string }, fetchImpl: Fe
 
 /** the provider of the local service, for settings whose address is valid */
 export function localService(cfg: LocalConfig & { url: string }, fetchImpl: Fetch = fetch): LlmProvider {
-  return localProvider(localTransport(cfg, fetchImpl));
+  return localProvider(localTransport(cfg, fetchImpl), { key: cfg.url });
 }
 
 /** a model that only makes embeddings (for search), not replies: never picked by default */

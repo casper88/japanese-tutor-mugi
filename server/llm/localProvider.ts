@@ -1,8 +1,9 @@
 // The local model backend (the third service): an OpenAI-compatible Chat Completions server on this PC or the home network,
 // such as Ollama, LM Studio, llama.cpp's llama-server or vLLM (where it is: server/llm/localService.ts). The Anthropic-shaped
 // request of claudeChat is converted here: the system text → a system message, messages → text messages (cache marks dropped),
-// max_tokens → max_tokens, the JSON schema → response_format json_schema (the local server limits the output to it). The
-// stream is on. A local model costs nothing, so nothing is recorded against the daily Claude budget.
+// max_tokens → max_tokens, the JSON schema → response_format json_schema (the local server limits the output to it). A server
+// that refuses that format (llama-cpp-python takes only the older json_object with a schema) is asked again in the older one,
+// and that is remembered for its address. The stream is on. A local model costs nothing, so nothing is recorded against the daily Claude budget.
 // The server writes every kanji reading for a local model (serverReadings): small models often get them wrong.
 import type { LlmChatRequest, LlmCompleteOptions, LlmCompleteRequest, LlmProvider, LlmResult, LlmStream } from './provider.ts';
 import { defaultDescribeError } from './provider.ts';
@@ -35,8 +36,23 @@ export class LocalLlmError extends Error {
 /** Sends one POST to the local server (path '/chat/completions'); the provider reads the status and the body */
 export type LocalTransport = (path: string, init: { body: string; signal: AbortSignal }) => Promise<Response>;
 
+/**
+ * How the JSON schema is sent: 'json_schema' is the OpenAI shape (Ollama, LM Studio, llama-server, vLLM); 'json_object' with a
+ * `schema` is the older shape some servers take instead (llama-cpp-python).
+ */
+export type SchemaStyle = 'json_schema' | 'json_object';
+/** the style each server took, by its address: a server that refused json_schema is sent json_object from then on */
+const schemaStyles = new Map<string, SchemaStyle>();
+/** an error text that says the server did not take the response_format it was sent */
+const FORMAT_REFUSED = /response_format|json_schema/i;
+
+/** forgets the styles learned so far (the tests) */
+export function clearSchemaStyles(): void {
+  schemaStyles.clear();
+}
+
 /** the Chat Completions body of an Anthropic-shaped request (exported for the tests) */
-export function chatCompletionsBody(req: LlmChatRequest | LlmCompleteRequest): Record<string, unknown> {
+export function chatCompletionsBody(req: LlmChatRequest | LlmCompleteRequest, style: SchemaStyle = 'json_schema'): Record<string, unknown> {
   const system = systemTextOf(req);
   const messages = [
     ...(system ? [{ role: 'system', content: system }] : []),
@@ -49,7 +65,13 @@ export function chatCompletionsBody(req: LlmChatRequest | LlmCompleteRequest): R
     messages,
     max_tokens: req.max_tokens,
     stream: true,
-    ...(format ? { response_format: { type: 'json_schema', json_schema: { name: schemaName, strict: true, schema: format.schema } } } : {}),
+    ...(format
+      ? {
+        response_format: style === 'json_object'
+          ? { type: 'json_object', schema: format.schema }
+          : { type: 'json_schema', json_schema: { name: schemaName, strict: true, schema: format.schema } },
+      }
+      : {}),
   };
 }
 
@@ -172,14 +194,23 @@ function timeoutError(): LocalLlmError {
   return new LocalLlmError('本地模型回應逾時，已中止', { timeout: true });
 }
 
-export function localProvider(transport: LocalTransport): LlmProvider {
-  /** one request: the transport, the HTTP status, then the stream read to its end */
+/** `key`: the server's address, under which the schema style it takes is remembered (none: nothing is remembered) */
+export function localProvider(transport: LocalTransport, opts: { key?: string } = {}): LlmProvider {
+  /** one POST, and the error it answered with (its status and text), if any */
+  async function post(req: LlmChatRequest | LlmCompleteRequest, style: SchemaStyle, signal: AbortSignal) {
+    const res = await transport('/chat/completions', { body: JSON.stringify(chatCompletionsBody(req, style)), signal });
+    if (res.ok) return { res, error: null };
+    return { res, error: { status: res.status, detail: errorDetail(await res.text().catch(() => '')) } };
+  }
+  /** one request: the transport (in the other schema style once, if the server refused this one), the HTTP status, then the stream read to its end */
   async function run(req: LlmChatRequest | LlmCompleteRequest, onDelta: (text: string) => void, signal: AbortSignal): Promise<LlmResult> {
-    const res = await transport('/chat/completions', { body: JSON.stringify(chatCompletionsBody(req)), signal });
-    if (!res.ok) {
-      const detail = errorDetail(await res.text().catch(() => ''));
-      throw new LocalLlmError(httpErrorMessage(res.status, detail), { status: res.status });
+    const style = (opts.key && schemaStyles.get(opts.key)) || 'json_schema';
+    let { res, error } = await post(req, style, signal);
+    if (error && req.output_config?.format && style === 'json_schema' && FORMAT_REFUSED.test(error.detail)) {
+      ({ res, error } = await post(req, 'json_object', signal));
+      if (!error && opts.key) schemaStyles.set(opts.key, 'json_object');
     }
+    if (error) throw new LocalLlmError(httpErrorMessage(error.status, error.detail), { status: error.status });
     // an abort ends the body too (a real fetch does this itself; the cancel makes it certain)
     const onAbort = () => { void res.body?.cancel().catch(() => {}); };
     if (signal.aborted) onAbort();

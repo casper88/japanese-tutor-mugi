@@ -11,8 +11,8 @@ import {
 } from '../../../server/claudeChat.ts';
 import { fallbackWorthy, type Service } from '../../../server/aiChain.ts';
 import {
-  LOCAL_MIN_TIMEOUT_MS, LOCAL_STREAM_TIMEOUT_MS, LocalLlmError, chatCompletionsBody, collectChatStream, describeLocalError, errorDetail,
-  localProvider, thinkFilter, type LocalTransport,
+  LOCAL_MIN_TIMEOUT_MS, LOCAL_STREAM_TIMEOUT_MS, LocalLlmError, chatCompletionsBody, clearSchemaStyles, collectChatStream, describeLocalError,
+  errorDetail, localProvider, thinkFilter, type LocalTransport,
 } from '../../../server/llm/localProvider.ts';
 import {
   LOCAL_URL_MESSAGE, clearLocalModelsCache, defaultLocalModel, listLocalModels, localConfigFrom, localStatus, modelIds, parseLocalUrl,
@@ -249,6 +249,37 @@ describe('localProvider', () => {
     const e = await s.done.catch((x: unknown) => x);
     expect((e as Error).name).toBe('AbortError');
     expect(fallbackWorthy(e)).toBe(false);
+  });
+
+  it('a server that refuses json_schema (llama-cpp-python) is asked again with json_object and a schema, remembered by its address', async () => {
+    clearSchemaStyles();
+    // llama-cpp-python's answer to a json_schema response_format (status 500, a pydantic validation message)
+    const refusal = JSON.stringify({ error: { message: "1 validation error: {'loc': ('body', 'response_format', 'type'), 'msg': \"Input should be 'text' or 'json_object'\", 'input': 'json_schema'}" } });
+    const sent: Record<string, unknown>[] = [];
+    const transport: LocalTransport = async (_p, init) => {
+      const body = JSON.parse(init.body) as { response_format?: { type?: string } };
+      sent.push(body);
+      if (body.response_format?.type === 'json_schema') return new Response(refusal, { status: 500 });
+      return new Response(sseStream(events([delta('{"ok":true,"feedback":"好"}'), finish()])), { status: 200 });
+    };
+    const req = { model: 'm', max_tokens: 5, system: 's', messages: [{ role: 'user' as const, content: 'q' }], output_config: { format: { type: 'json_schema' as const, schema: { type: 'object' } } }, schemaName: 'mugi_judge' };
+    const r = await localProvider(transport, { key: 'http://h/v1' }).complete(req);
+    expect(r.text).toBe('{"ok":true,"feedback":"好"}');
+    expect(sent.map((b) => (b.response_format as { type: string }).type)).toEqual(['json_schema', 'json_object']);
+    expect(sent[1].response_format).toEqual({ type: 'json_object', schema: { type: 'object' } });
+    // the same address is sent json_object at once from then on
+    await localProvider(transport, { key: 'http://h/v1' }).complete(req);
+    expect(sent.map((b) => (b.response_format as { type: string }).type)).toEqual(['json_schema', 'json_object', 'json_object']);
+  });
+
+  it('an error that is not about the response format is not retried', async () => {
+    clearSchemaStyles();
+    const transport = vi.fn<LocalTransport>(async () => new Response('{"error":"out of memory"}', { status: 500 }));
+    const req = { model: 'm', max_tokens: 5, system: 's', messages: [{ role: 'user' as const, content: 'q' }], output_config: { format: { type: 'json_schema' as const, schema: {} } } };
+    const e = await localProvider(transport, { key: 'k' }).complete(req).catch((x: unknown) => x);
+    expect((e as LocalLlmError).status).toBe(500);
+    expect((e as Error).message).toContain('out of memory');
+    expect(transport).toHaveBeenCalledTimes(1);
   });
 
   it('errorDetail reads the error text of the usual bodies and cuts it short', () => {
