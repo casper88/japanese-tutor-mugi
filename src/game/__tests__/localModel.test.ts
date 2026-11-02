@@ -152,6 +152,16 @@ describe('a small model writes the player’s line correctly first (corrected)',
     expect(q.tip).toBe('這句話的日文可以說 <ja>東京に行きますか？</ja>');
   });
 
+  it('a tip the model wrote gets the corrected line after it when it does not hold it (Qwen3 8B: right correction, tip about a comma)', async () => {
+    const off = reply({ corrected: '昨日、友達に会いました', tip: '加上「、」讓語氣更柔和' });
+    expect(JSON.parse(await tipFromCorrection(off, '昨日友達に会うました')).tip).toBe('加上「、」讓語氣更柔和。可以說成 <ja>昨日、友達に会いました</ja>。');
+    const zh = reply({ corrected: 'このラーメン屋はとてもおいしいです。', tip: '「很好吃」是 <ja>おいしい</ja>' });
+    expect(JSON.parse(await tipFromCorrection(zh, '這家拉麵很好吃')).tip).toBe('「很好吃」是 <ja>おいしい</ja>。日文可以說 <ja>このラーメン屋はとてもおいしいです。</ja>');
+    // the model's own tip on a sentence its correction leaves the same is not touched
+    const same = reply({ corrected: '週末は家で休みました', tip: '很自然' });
+    expect(await tipFromCorrection(same, '週末は家で休みました')).toBe(same);
+  });
+
   it('an empty tip is written from the translation of his Chinese', async () => {
     const out = JSON.parse(await tipFromCorrection(reply({ corrected: '明日東京に行きます' }), '我明天要去東京'));
     expect(out.tip).toBe('這句話的日文可以說 <ja>明日東京に行きます</ja>。');
@@ -160,8 +170,8 @@ describe('a small model writes the player’s line correctly first (corrected)',
   it('the reply stays as it is: the same line (kanji as kana, punctuation), a tip already written, no correction, cut JSON', async () => {
     const same = reply({ corrected: '週末は家でゆっくり休みました。' });
     expect(await tipFromCorrection(same, '週末は家でゆっくりやすみました')).toBe(same);
-    const written = reply({ corrected: '昨日は寒かったです', tip: '要用過去式 <ja>寒かった</ja>。' });
-    expect(await tipFromCorrection(written, '昨日は寒いです')).toBe(written);
+    const holds = reply({ corrected: '昨日は寒かったです', tip: '要用過去式：<ja>昨日は寒かったです</ja>。' });
+    expect(await tipFromCorrection(holds, '昨日は寒いです')).toBe(holds);
     const none = reply({ corrected: '' });
     expect(await tipFromCorrection(none, '昨日は寒いです')).toBe(none);
     const chinese = reply({ corrected: '昨天很冷' });
