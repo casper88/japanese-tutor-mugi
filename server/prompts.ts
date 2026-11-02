@@ -32,11 +32,36 @@ const TEACHER_REMINDER = `格式細節（每則回覆都要遵守）：
 寫完之前逐項檢查：①tip 的文字是繁體中文，不是日文；②text 裡每個含漢字的詞，後面都緊接半形方括號的平假名讀音（tip 裡的 <ja> 也一樣）；③text 裡沒有中文，tip 的 <ja> 以外沒有假名。`;
 
 
+/**
+ * The reminder for a small local model (smallModel): the same rules, shorter, with no example (a small model copies it word for
+ * word instead of answering) and no readings (the server adds them all, server/readings.ts). It goes before the player's words
+ * (upstreamMessages), so what the player said is the last thing the model reads.
+ */
+const TEACHER_REMINDER_PLAIN = `回覆規則：
+- segments 要直接回應他下面這句話的內容，像朋友聊天一樣接話，最多兩句日文。
+- 他說中文時：tip 一定要寫，教他這句話的日文怎麼說。
+- 他說日文時：先檢查助詞、時態、動詞變化和用詞。有錯：tip 一定要寫，用一句繁體中文指出最重要的一個錯並給正確說法；完全沒錯：tip 給 ""。
+- gloss 和 tip 一律用繁體中文（不要用簡體字）；tip 裡的日文放在 <ja>…</ja> 裡。text 只放日文。
+- 漢字後面不要加方括號或讀音，讀音由系統自動加上。`;
+
+/** `text` with `from` replaced by `to`; throws when `from` is not in it, so a variant never drifts away from its prompt unnoticed */
+function variantOf(text: string, from: string, to: string): string {
+  if (!text.includes(from)) throw new Error(`prompt variant: text not found: ${from.slice(0, 30)}`);
+  return text.replace(from, to);
+}
+
 /** The tip rewrite (POST /api/chat/fix-tip): one 小提醒 that came back with Japanese prose is rewritten. Stable text. */
 export const TIP_FIX_SYSTEM = `你是日語老師的助手。使用者會給你一則「小提醒」（給學習者看的中文說明），它寫成了日文或中日混雜。請只重寫這一則：
 - 整段用繁體中文說明，保留原本的重點與長度。
 - 日文（要教的句子、詞）只放在 <ja>…</ja> 裡，漢字後面緊接半形方括號的平假名讀音，例如 <ja>学校[がっこう]に行[い]きました</ja>。
 - 回覆 JSON，tip 欄位放重寫後的說明（不要加 <tip> 標籤），不要其他文字。`;
+
+/** The tip rewrite for a model whose readings the server writes (smallModel): no readings asked for. */
+export const TIP_FIX_SYSTEM_PLAIN = variantOf(
+  TIP_FIX_SYSTEM,
+  '，漢字後面緊接半形方括號的平假名讀音，例如 <ja>学校[がっこう]に行[い]きました</ja>。',
+  '，漢字不要標讀音（不要加方括號），讀音由系統自動加上。',
+);
 
 /** The reply format: the API enforces the JSON fields (Structured Outputs); this says what each one means. */
 const TUTOR_OUTPUT_RULES = `
@@ -64,9 +89,12 @@ ${TEACHER_BASE}
 ${TUTOR_OUTPUT_RULES}`;
 }
 
-/** The volatile reminder: appended to the newest user message only, never stored in the history. */
-export function reminderPrompt(): string {
-  return TEACHER_REMINDER;
+/**
+ * The volatile reminder: appended to the newest user message only, never stored in the history. `smallModel`: the model
+ * writes no readings (the local models; the server adds them all).
+ */
+export function reminderPrompt(opts: { smallModel?: boolean } = {}): string {
+  return opts.smallModel ? TEACHER_REMINDER_PLAIN : TEACHER_REMINDER;
 }
 
 /** The judge (小提醒練習): does the learner's spoken line mean and say the same as the target sentence? Stable text. */
@@ -95,3 +123,14 @@ export const LOOKUP_SYSTEM = `你是日語查詢工具，給台灣的日語學�
 - 所有說明文字用繁體中文，日文只放在 <ja> 裡，除了 <ja> 以外不要在中文說明裡夾日文假名。
 - 如果問題跟日文完全無關，items、grammar、examples 都給空陣列 []，message 用一句繁體中文說明。否則 message 給空字串 ""。
 - 整體盡量簡短，不要長篇大論。`;
+
+/** The lookup for a model whose readings the server writes (smallModel): no readings asked for. */
+export const LOOKUP_SYSTEM_PLAIN = variantOf(
+  variantOf(
+    LOOKUP_SYSTEM,
+    '；每個含漢字的詞，漢字後面緊接半形方括號寫平假名讀音，例如 <ja>学校[がっこう]に行[い]きます</ja>。',
+    '；漢字不要標讀音（不要加方括號），讀音由系統自動加上。',
+  ),
+  'ja 同樣用 <ja>…</ja> 並標讀音',
+  'ja 同樣用 <ja>…</ja>、不標讀音',
+);

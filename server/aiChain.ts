@@ -2,7 +2,7 @@
 // (`providers`), and the server tries them in that order. This module holds the pure parts: the body fields, the rule for
 // which errors move on to the next service, and the one-shot run over a list of services.
 import Anthropic from '@anthropic-ai/sdk';
-import { OPENAI_MODEL_MAX_CHARS, parseProviderList, DEFAULT_PROVIDERS, type ProviderId } from '../src/game/claudeProtocol.ts';
+import { OPENAI_MODEL_MAX_CHARS, PROVIDERS_MAX, PROVIDER_IDS, parseProviderList, DEFAULT_PROVIDERS, type ProviderId } from '../src/game/claudeProtocol.ts';
 import type { LlmProvider } from './llm/provider.ts';
 
 /** a service ready for one request: which one, the model it will use, and the provider that calls it */
@@ -10,7 +10,10 @@ export type Service = {
   id: ProviderId;
   model: string;
   provider: LlmProvider;
-  /** a Claude service: its spending is recorded (usage.ts). ChatGPT calls use the plan's quota and are not recorded as Claude cost. */
+  /**
+   * a Claude service: its spending is recorded (usage.ts). ChatGPT calls use the plan's quota and a local model costs nothing, so
+   * neither is recorded as Claude cost.
+   */
   spend: boolean;
   /** a Claude service: releases its reservation against the daily cap (claudeChat.ts hold); called when the response is done */
   hold?: () => void;
@@ -25,13 +28,13 @@ export class RoutingError extends Error {
 
 /**
  * The `providers` and `openaiModel` of a body: an absent (or null) providers list is the default (Claude alone). A list that is
- * not 1 to 2 known ids, none repeated, is a RoutingError (400). openaiModel: a string up to OPENAI_MODEL_MAX_CHARS, '' = none.
+ * not 1 to PROVIDERS_MAX known ids, none repeated, is a RoutingError (400). openaiModel: a string up to OPENAI_MODEL_MAX_CHARS, '' = none.
  */
 export function parseRouting(v: { providers?: unknown; openaiModel?: unknown }): Routing {
   let providers: ProviderId[] = [...DEFAULT_PROVIDERS];
   if (v.providers !== undefined && v.providers !== null) {
     const list = parseProviderList(v.providers);
-    if (!list) throw new RoutingError('providers 需為 1 到 2 個不重複的服務（anthropic、openai）');
+    if (!list) throw new RoutingError(`providers 需為 1 到 ${PROVIDERS_MAX} 個不重複的服務（${PROVIDER_IDS.join('、')}）`);
     providers = list;
   }
   let openaiModel: string | undefined;

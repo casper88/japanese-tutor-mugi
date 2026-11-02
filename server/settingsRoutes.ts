@@ -1,12 +1,13 @@
 // The settings routes of the dev server (mounted by claudeChat.ts under /api/settings, behind guardApi):
 //   GET  /api/settings/keys    → { status }   what is set: { set, last4? } per key; the region is shown in full
-//   POST /api/settings/keys    body { anthropicKey?, anthropicWorkspace?, googleKey?, azureKey?, azureRegion? }
+//   POST /api/settings/keys    body { anthropicKey?, anthropicWorkspace?, googleKey?, azureKey?, azureRegion?, localUrl?, localModel? }
 //                              (a string sets it, null clears it, absent = unchanged) → { status }. Local only: this PC, not a phone.
 //   GET  /api/settings/budget  → { usd, spentTodayUsd }
 //   POST /api/settings/budget  body { usd } (0 to 100, at most two decimals) → { usd, spentTodayUsd }. A trusted request (settingsAccess.ts).
 //                              0 means no daily cap, and only this PC may set it: a trusted request that is not local (a phone
 //                              through Tailscale) gets 403 for 0; it may set 0.01 to 100.
-// The GETs never show a full key: a status shows whether each one is set and its last four characters (a region in full).
+// The GETs never show a full key: a status shows whether each one is set and its last four characters (a region, the local
+// model's address and its model name in full: they are not secret).
 // No response, error or log carries a key value: a status shows only the last four characters (none when the value is 4
 // characters or fewer).
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -26,6 +27,8 @@ export type KeysStatus = {
   googleKey: KeyStatus;
   azureKey: KeyStatus;
   azureRegion: RegionStatus;
+  localUrl: RegionStatus;
+  localModel: RegionStatus;
 };
 
 /** the body fields of POST /api/settings/keys, and the .env.local name each one sets */
@@ -35,6 +38,8 @@ const KEY_FIELDS = {
   googleKey: 'GOOGLE_TTS_API_KEY',
   azureKey: 'AZURE_SPEECH_KEY',
   azureRegion: 'AZURE_SPEECH_REGION',
+  localUrl: 'LOCAL_LLM_URL',
+  localModel: 'LOCAL_LLM_MODEL',
 } as const satisfies Record<string, AllowedKey>;
 export type KeyField = keyof typeof KEY_FIELDS;
 
@@ -48,7 +53,13 @@ function keyStatus(content: string, key: AllowedKey): KeyStatus {
   return v.length > 4 ? { set: true, last4: v.slice(-4) } : { set: true };
 }
 
-/** the status of every key (the region in full, the rest as set + last four) */
+/** a setting that is shown in full (it is not secret) */
+function plainStatus(content: string, key: AllowedKey): RegionStatus {
+  const v = readEnvValue(content, key);
+  return v ? { set: true, value: v } : { set: false };
+}
+
+/** the status of every key (the region and the local model settings in full, the rest as set + last four) */
 export function keysStatus(content: string): KeysStatus {
   const region = readEnvValue(content, 'AZURE_SPEECH_REGION');
   return {
@@ -57,6 +68,8 @@ export function keysStatus(content: string): KeysStatus {
     googleKey: keyStatus(content, 'GOOGLE_TTS_API_KEY'),
     azureKey: keyStatus(content, 'AZURE_SPEECH_KEY'),
     azureRegion: region ? { set: true, value: region } : { set: false },
+    localUrl: plainStatus(content, 'LOCAL_LLM_URL'),
+    localModel: plainStatus(content, 'LOCAL_LLM_MODEL'),
   };
 }
 

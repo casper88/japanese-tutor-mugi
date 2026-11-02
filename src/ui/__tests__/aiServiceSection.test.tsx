@@ -33,10 +33,10 @@ describe('AiServiceSection', () => {
   it('lists the services in the order the player keeps them; a service that is off comes after', () => {
     const r = render(<AiServiceSection providers={['openai', 'anthropic']} openaiModel="" claudeOk chatgpt={SIGNED_IN} onChange={() => {}} onRefresh={() => {}} localPc />);
     expect(r.host.querySelector('h3')?.textContent).toBe('AI 服務');
-    expect(rowLabels(r.host)).toEqual(['ChatGPT', 'Claude']);
+    expect(rowLabels(r.host)).toEqual(['ChatGPT', 'Claude', '本地模型']);
     r.unmount();
     const off = render(<AiServiceSection providers={['anthropic']} openaiModel="" claudeOk chatgpt={SIGNED_OUT} onChange={() => {}} onRefresh={() => {}} localPc />);
-    expect(rowLabels(off.host)).toEqual(['Claude', 'ChatGPT']);
+    expect(rowLabels(off.host)).toEqual(['Claude', 'ChatGPT', '本地模型']);
     off.unmount();
   });
 
@@ -132,5 +132,25 @@ describe('AiServiceSection', () => {
     const r = render(<AiServiceSection providers={['anthropic']} openaiModel="" claudeOk chatgpt={SIGNED_OUT} onChange={() => {}} onRefresh={() => {}} localPc />);
     expect(r.host.textContent).toContain('不需要 OpenAI API 金鑰');
     r.unmount();
+  });
+
+  it('本地模型: its status line, the models its server lists, 重新偵測, and the address boxes only on the PC', () => {
+    const onRefreshLocal = vi.fn();
+    const local = { ok: true, url: 'http://127.0.0.1:11434/v1', model: 'qwen3:8b', models: ['qwen3:8b', 'gemma3:4b'] };
+    const pc = render(<AiServiceSection providers={['local']} openaiModel="" claudeOk={false} chatgpt={SIGNED_OUT} local={local}
+      onChange={() => {}} onRefresh={() => {}} onRefreshLocal={onRefreshLocal} localPc />);
+    expect(rowLabels(pc.host)[0]).toBe('本地模型');
+    expect(pc.host.textContent).toContain('已連線（qwen3:8b）');
+    expect(pc.host.textContent).toContain('可用模型：qwen3:8b、gemma3:4b');
+    expect(pc.host.querySelector('input[aria-label="本地模型網址"]')).not.toBeNull();
+    act(() => button(pc.host, '重新偵測').click());
+    expect(onRefreshLocal).toHaveBeenCalledTimes(1);
+    pc.unmount();
+    const phone = render(<AiServiceSection providers={['local']} openaiModel="" claudeOk={false} chatgpt={SIGNED_OUT}
+      local={{ ok: false, url: '', model: '', models: [], message: '連不上本地模型服務' }} onChange={() => {}} onRefresh={() => {}} localPc={false} />);
+    expect(phone.host.textContent).toContain('連不上本地模型服務');
+    expect(phone.host.querySelector('input[aria-label="本地模型網址"]')).toBeNull();
+    expect(phone.host.textContent).toContain('網址和模型名稱只能在電腦上設定');
+    phone.unmount();
   });
 });

@@ -3,7 +3,7 @@ import { apiFetch } from './apiFetch';
 // (only the last four characters ever come back) and the daily budget (MUGI_DAILY_USD). Every call fails softly: a null or a
 // { ok: false, message } the sheet can show, never a throw.
 
-/** what is set for one key: last4 only when the value is longer than 4 characters; a region shows its name in full */
+/** what is set for one key: last4 only when the value is longer than 4 characters; a region and the local model settings show their value in full */
 export type FieldStatus = { set: boolean; last4?: string; value?: string };
 export type KeysStatus = {
   anthropicKey: FieldStatus;
@@ -11,6 +11,8 @@ export type KeysStatus = {
   googleKey: FieldStatus;
   azureKey: FieldStatus;
   azureRegion: FieldStatus;
+  localUrl: FieldStatus;
+  localModel: FieldStatus;
 };
 /** the body names of POST /api/settings/keys */
 export type KeyName = keyof KeysStatus;
@@ -40,6 +42,8 @@ export function readKeysStatus(j: unknown): KeysStatus {
     googleKey: readField(s.googleKey),
     azureKey: readField(s.azureKey),
     azureRegion: readField(s.azureRegion),
+    localUrl: readField(s.localUrl),
+    localModel: readField(s.localModel),
   };
 }
 

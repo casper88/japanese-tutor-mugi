@@ -25,16 +25,19 @@ export function chatModelLabel(id: string): string {
 
 /**
  * The AI services, in the order the server tries them: each AI request carries its own list (`providers`, see
- * server/aiChain.ts). Claude is the API key service; ChatGPT is the signed-in account (server/openai).
+ * server/aiChain.ts). Claude is the API key service; ChatGPT is the signed-in account (server/openai); 本地模型 is an
+ * OpenAI-compatible server on the PC, such as Ollama or LM Studio (server/llm/localService.ts).
  */
-export const PROVIDER_IDS = ['anthropic', 'openai'] as const;
+export const PROVIDER_IDS = ['anthropic', 'openai', 'local'] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 /** the names on screen (設定 › AI 服務) */
-export const PROVIDER_LABELS: Record<ProviderId, string> = { anthropic: 'Claude', openai: 'ChatGPT' };
+export const PROVIDER_LABELS: Record<ProviderId, string> = { anthropic: 'Claude', openai: 'ChatGPT', local: '本地模型' };
 /** a request without a list (and an old save) uses Claude alone, as before */
 export const DEFAULT_PROVIDERS: ProviderId[] = ['anthropic'];
 /** the most services a request may list (every id once) */
-export const PROVIDERS_MAX = 2;
+export const PROVIDERS_MAX = PROVIDER_IDS.length;
+/** where the local model server is when LOCAL_LLM_URL is not set: Ollama's OpenAI-compatible address on this PC */
+export const LOCAL_LLM_URL_DEFAULT = 'http://127.0.0.1:11434/v1';
 /** the longest ChatGPT model id a request may name */
 export const OPENAI_MODEL_MAX_CHARS = 100;
 

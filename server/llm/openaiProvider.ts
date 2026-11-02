@@ -33,16 +33,21 @@ export type OpenAITransport = (path: string, init: { body: string; signal: Abort
 type Block = { type?: string; text?: unknown };
 
 /** the text of a message content: a string, or the text blocks of an array (cache marks and other blocks are dropped) */
-function textOf(content: unknown): string {
+export function textOf(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map((b: Block) => (b && b.type === 'text' && typeof b.text === 'string' ? b.text : '')).join('');
   return '';
 }
 
+/** the system text of an Anthropic-shaped request: a string, or its text blocks joined by a blank line */
+export function systemTextOf(req: LlmChatRequest | LlmCompleteRequest): string {
+  const system = req.system as unknown;
+  return Array.isArray(system) ? system.map((b: Block) => textOf([b])).filter(Boolean).join('\n\n') : textOf(system);
+}
+
 /** the Responses body of an Anthropic-shaped request (exported for the tests) */
 export function responsesBody(req: LlmChatRequest | LlmCompleteRequest): Record<string, unknown> {
-  const system = req.system as unknown;
-  const instructions = Array.isArray(system) ? system.map((b: Block) => textOf([b])).filter(Boolean).join('\n\n') : textOf(system);
+  const instructions = systemTextOf(req);
   const input = req.messages.map((m) => ({ role: m.role, content: textOf(m.content) }));
   const format = req.output_config?.format;
   const schemaName = (req as { schemaName?: string }).schemaName || DEFAULT_SCHEMA_NAME;
