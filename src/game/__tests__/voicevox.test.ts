@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TtsCache, looksLikeAudio, looksLikeWav, ttsCacheFileName } from '../../../server/ttsCache.ts';
+import { TtsCache as DiskCache, looksLikeAudio, looksLikeWav, ttsCacheFileName } from '../../../server/ttsCache.ts';
 import {
   TtsError, TTS_VOICES, answerTts, audioExtOf, audioTypeOf, cacheKey, createVoicevoxStatus, engineConfigured, isVoicevoxStyle,
   parseTtsBody, ttsStatus, voicevoxSynthesize, voicevoxUrl, voicevoxVoices, type TtsBody, type TtsConfig,
@@ -49,13 +49,28 @@ function upEngine(extra: { query?: Record<string, unknown> } = {}) {
 
 const BASE = 'http://127.0.0.1:50021';
 
+/** the caches the running test opened (TtsCache below) */
+const opened: DiskCache[] = [];
+/**
+ * The real cache, remembered when it is made. A cache writes its files in the background (fetchOnce and answerTts return before
+ * the file is on disk), so afterEach waits for every cache's writes before it removes the folder: a file that lands while the
+ * folder is being removed makes the removal fail (ENOTEMPTY).
+ */
+class TtsCache extends DiskCache {
+  constructor(...args: ConstructorParameters<typeof DiskCache>) {
+    super(...args);
+    opened.push(this);
+  }
+}
+
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'mugi-tutor-voicevox-'));
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(opened.splice(0).map((c) => c.settle()));
   vi.restoreAllMocks();
   rmSync(dir, { recursive: true, force: true });
 });
